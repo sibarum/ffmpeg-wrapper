@@ -164,7 +164,15 @@ public final class Video implements AutoCloseable {
         }
     }
 
+    /**
+     * What a failed downcall throws. A {@link LinkageError} (the libraries would not load, so {@code CApi}
+     * never initialised) is rethrown as it is: it says the decoder is missing, not that the file is bad,
+     * and a caller tells the two apart by it.
+     */
     static VideoException downcallFailed(String name, Throwable cause) {
+        if (cause instanceof LinkageError e) {
+            throw e;
+        }
         if (cause instanceof VideoException e) {
             return e;
         }

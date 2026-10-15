@@ -100,11 +100,17 @@ demuxers wanted is a fraction of the size, and changes nothing above `build.sh`.
 
 At runtime the libraries are extracted from the jar to a temp dir and loaded in the order `libs.txt`
 gives (each after the ones it links, so a library loaded by path finds its dependencies already there).
-Override with `-Dffmpeg.native.dir=<dir>`, a directory laid out as `build.sh` stages one. Callers need
+Before extracting, two places are tried: `-Dffmpeg.native.dir=<dir>`, a directory laid out as `build.sh`
+stages one, then an `ffmpeg` folder laid out the same way beside the running executable. Callers need
 `--enable-native-access=ALL-UNNAMED` (or their module).
 
-There is no native-image story yet. Unlike imagelib, FFmpeg is a set of shared libraries, so a native
-image would ship them beside the executable rather than link them in.
+**Native images** ship the libraries beside the executable rather than link them in, since FFmpeg is a
+set of shared libraries (unlike imagelib). The jar carries the FFM downcall metadata and the flags a
+native image needs (`META-INF/native-image/sibarum.ffmpeg/ffmpeg-wrapper/`), and registers none of the
+libraries as resources, which would put 125 MB into the executable. The application copies
+`natives/<platform>/` out of the jar into an `ffmpeg` folder beside its executable (Pix does it with
+`maven-dependency-plugin` and ships the folder as an installer archive). Without it, `Ffmpeg.open` throws
+the `LinkageError` of the failed load, so a caller can tell a missing decoder from a bad file.
 
 ## Behaviour worth knowing
 

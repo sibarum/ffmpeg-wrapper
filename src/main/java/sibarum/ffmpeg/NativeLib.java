@@ -15,7 +15,8 @@ import java.util.Locale;
  * Locates and loads the {@code ffwrap} shim and the FFmpeg libraries under it.
  *
  * <p>Search order: the {@code ffmpeg.native.dir} system property (a directory laid out as
- * {@code native/build.sh} stages one), then the bundled classpath resources under
+ * {@code native/build.sh} stages one), then an {@code ffmpeg} folder beside the running executable laid
+ * out the same way (how a native image ships them), then the bundled classpath resources under
  * {@code /natives/<platform>/}, extracted together to one temp directory. Loading is idempotent and
  * thread-safe.
  *
@@ -27,6 +28,9 @@ import java.util.Locale;
  */
 final class NativeLib {
 
+    /** The folder beside an executable that {@link #besideExecutable} looks in. */
+    static final String BESIDE = "ffmpeg";
+
     private static volatile SymbolLookup lookup;
 
     static synchronized SymbolLookup load() {
@@ -35,7 +39,8 @@ final class NativeLib {
         }
         String dir = System.getProperty("ffmpeg.native.dir");
         try {
-            Path base = dir != null ? Path.of(dir) : extractBundled();
+            Path beside = dir == null ? besideExecutable() : null;
+            Path base = dir != null ? Path.of(dir) : beside != null ? beside : extractBundled();
             for (String name : libraries(Files.readString(base.resolve("libs.txt"), StandardCharsets.UTF_8))) {
                 System.load(base.resolve(name).toAbsolutePath().toString());
             }
@@ -75,6 +80,21 @@ final class NativeLib {
             }
         }
         return names;
+    }
+
+    /**
+     * An {@value #BESIDE} folder next to the running executable, holding a {@code libs.txt}: where a native
+     * image's installer puts the libraries, since they are not inside it. Null when there is none, which
+     * on a JVM is always (the executable is {@code java}).
+     */
+    static Path besideExecutable() {
+        try {
+            Path exe = ProcessHandle.current().info().command().map(Path::of).orElse(null);
+            Path folder = exe == null || exe.getParent() == null ? null : exe.getParent().resolve(BESIDE);
+            return folder != null && Files.isRegularFile(folder.resolve("libs.txt")) ? folder : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private static Path extractBundled() throws IOException {
