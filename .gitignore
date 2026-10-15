@@ -1,0 +1,6 @@
+target/
+native/dist/
+native/build/
+native/ffmpeg/
+.idea/
+*.iml
