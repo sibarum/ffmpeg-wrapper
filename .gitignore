@@ -4,3 +4,4 @@ native/build/
 native/ffmpeg/
 .idea/
 *.iml
+native/miniaudio/

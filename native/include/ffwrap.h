@@ -1,18 +1,21 @@
 /*
- * ffwrap — one C ABI over every video FFmpeg can decode.
+ * ffwrap — one C ABI over every video FFmpeg can decode, and the sound that goes with it.
  *
- * Hand-written, not generated: this header is the contract, and the C in ../ffwrap/ffwrap.c and the
- * Java downcalls in ../../src/main/java/sibarum/ffmpeg/CApi.java are both written against it. Sixteen
- * functions, no structs crossing the boundary, one opaque handle. FFmpeg's own structs change layout
- * between major versions; they stay on this side of the line, so the Java never learns one.
+ * Hand-written, not generated: this header is the contract, and the C in ../ffwrap/ (ffwrap.c for
+ * pictures, audio.c for sound) and the Java downcalls in ../../src/main/java/sibarum/ffmpeg/CApi.java
+ * are all written against it. Twenty-seven functions, no structs crossing the boundary, two opaque
+ * handles. FFmpeg's own structs change layout between major versions; they stay on this side of the
+ * line, so the Java never learns one.
  *
  * Pixels are always straight RGBA8, sRGB, tightly packed, top row first: what imagelib gives a picture,
- * so a video frame uploads the way a picture does.
+ * so a video frame uploads the way a picture does. Sound never crosses at all: it goes from the decoder
+ * to the speaker on this side, and only its clock comes back.
  *
  * Failure is uniform: a function returning a pointer returns NULL, one returning a status returns 0 (or
  * -1 where 0 already means something), and ffw_last_error() then says why on this thread.
  *
- * A handle is used from one thread at a time. Different handles on different threads do not interact.
+ * An FfwVideo is used from one thread at a time; an FfwAudio from any. Different handles on different
+ * threads do not interact.
  */
 #ifndef FFWRAP_H
 #define FFWRAP_H
@@ -54,7 +57,7 @@ FFW_API double ffw_frame_rate(const FfwVideo *v);
 FFW_API const char *ffw_codec(const FfwVideo *v);
 FFW_API const char *ffw_container(const FfwVideo *v);
 
-/* 1 if the file also holds an audio stream, else 0. Nothing here decodes it. */
+/* 1 if the file also holds an audio stream, else 0. An FfwVideo does not decode it; ffw_audio_open does. */
 FFW_API int32_t ffw_has_audio(const FfwVideo *v);
 
 /* Scale every frame from now on to width x height px. The default is ffw_width x ffw_height.
@@ -75,6 +78,51 @@ FFW_API const uint8_t *ffw_pixels(const FfwVideo *v);
 FFW_API int32_t ffw_seek(FfwVideo *v, int64_t us);
 
 FFW_API void ffw_close(FfwVideo *v);
+
+/* --- sound -------------------------------------------------------------------------------------------
+ *
+ * A file's sound, decoded and played out of a speaker: a second handle on the same file, independent of
+ * any FfwVideo on it, so a video's exact, frame-numbered seeking is never at the sound's mercy.
+ *
+ * An FfwAudio decodes on a thread of its own, a little ahead, into a buffer the output device drains;
+ * its calls only steer that, and may come from any thread. Its clock is the time of the sound being
+ * heard now, which is what a player shows its pictures by. */
+typedef struct FfwAudio FfwAudio;
+
+/* Where an FfwAudio plays to. */
+#define FFW_AUDIO_SPEAKERS 0    /* the system's default output, following it when that changes */
+#define FFW_AUDIO_NOWHERE  1    /* no device: the sound is drained in real time and dropped (for tests) */
+
+/* Open the sound of the file at a UTF-8 path (the stream that goes with its best video, if it has one)
+ * and an output, paused at the start. NULL if the file will not open, has no sound or no decoder for
+ * it, or the output will not open. Close with ffw_audio_close. */
+FFW_API FfwAudio *ffw_audio_open(const char *path, int32_t output);
+
+/* The sound's codec's short name ("aac"), owned by a; its channels and samples per second as stored. */
+FFW_API const char *ffw_audio_codec(const FfwAudio *a);
+FFW_API uint32_t ffw_audio_channels(const FfwAudio *a);
+FFW_API uint32_t ffw_audio_rate(const FfwAudio *a);
+
+/* Start and stop the output. Paused, the clock holds and the device is given back. 1, or 0 on failure. */
+FFW_API int32_t ffw_audio_play(FfwAudio *a);
+FFW_API int32_t ffw_audio_pause(FfwAudio *a);
+
+/* Go to `us` from the stream's start, exactly: the clock says `us` at once and holds there until the
+ * sound from `us` on has been decoded and starts to be heard. Playing or paused, it stays so. 1, or 0. */
+FFW_API int32_t ffw_audio_seek(FfwAudio *a, int64_t us);
+
+/* Loudness, from 0 (silent) to 1 (as stored); clamped to that. */
+FFW_API void ffw_audio_volume(FfwAudio *a, float volume);
+
+/* The time of the sound being heard now, in microseconds from the stream's start: smooth between the
+ * device's periods, and allowing for what the device holds but has not played yet. */
+FFW_API int64_t ffw_audio_clock_us(FfwAudio *a);
+
+/* 1 once all the sound has been played (until the next seek), else 0. */
+FFW_API int32_t ffw_audio_ended(FfwAudio *a);
+
+/* Stop the output, end the decoding thread and free everything. NULL does nothing. */
+FFW_API void ffw_audio_close(FfwAudio *a);
 
 /* Why the last call on this thread failed, or NULL. Valid until the next failing call on it. */
 FFW_API const char *ffw_last_error(void);

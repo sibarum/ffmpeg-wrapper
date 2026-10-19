@@ -7,16 +7,17 @@ import java.lang.invoke.MethodHandle;
 
 import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_DOUBLE;
+import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * Raw FFM downcalls onto {@code native/include/ffwrap.h}. Hand-written, one line per function, in the
- * header's order — sixteen of them, which is the whole of the boundary.
+ * header's order — twenty-seven of them, which is the whole of the boundary.
  *
  * <p>{@code int64_t} is bound as {@code JAVA_LONG} and every {@code uint32_t} as {@code JAVA_INT}; a
- * frame side that overflows a signed int is one no decoder would have produced. Lifetimes belong to
- * {@link Video}, not here: nothing in this class frees anything.
+ * frame side or sample rate that overflows a signed int is one no decoder would have produced. Lifetimes
+ * belong to {@link Video} and {@link Audio}, not here: nothing in this class frees anything.
  */
 final class CApi {
 
@@ -47,6 +48,22 @@ final class CApi {
     static final MethodHandle ffw_pixels = h("ffw_pixels", FunctionDescriptor.of(ADDRESS, ADDRESS));
     static final MethodHandle ffw_seek = h("ffw_seek", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
     static final MethodHandle ffw_close = h("ffw_close", FunctionDescriptor.ofVoid(ADDRESS));
+
+    // sound
+    static final MethodHandle ffw_audio_open =
+            h("ffw_audio_open", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT));
+    static final MethodHandle ffw_audio_codec = h("ffw_audio_codec", FunctionDescriptor.of(ADDRESS, ADDRESS));
+    static final MethodHandle ffw_audio_channels = h("ffw_audio_channels", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_audio_rate = h("ffw_audio_rate", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_audio_play = h("ffw_audio_play", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_audio_pause = h("ffw_audio_pause", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_audio_seek =
+            h("ffw_audio_seek", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+    static final MethodHandle ffw_audio_volume =
+            h("ffw_audio_volume", FunctionDescriptor.ofVoid(ADDRESS, JAVA_FLOAT));
+    static final MethodHandle ffw_audio_clock_us = h("ffw_audio_clock_us", FunctionDescriptor.of(JAVA_LONG, ADDRESS));
+    static final MethodHandle ffw_audio_ended = h("ffw_audio_ended", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_audio_close = h("ffw_audio_close", FunctionDescriptor.ofVoid(ADDRESS));
 
     static final MethodHandle ffw_last_error = h("ffw_last_error", FunctionDescriptor.of(ADDRESS));
 

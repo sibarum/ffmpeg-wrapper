@@ -4,7 +4,8 @@
 #
 # FFmpeg itself is not built here. A pinned LGPL shared build from BtbN/FFmpeg-Builds is fetched into
 # native/ffmpeg/ (not committed) and checked against its sha256, and the shim is compiled against its
-# headers and linked against its libraries: MSVC on Windows, the system C compiler on Linux.
+# headers and linked against its libraries: MSVC on Windows, the system C compiler on Linux. The sound
+# output, miniaudio, is one header fetched the same way into native/miniaudio/ and compiled into the shim.
 #
 #   ./native/build.sh
 #
@@ -62,6 +63,21 @@ rm -rf "$DEST"
 mkdir -p "$DEST" build
 : > "$DEST/libs.txt"
 
+# --- miniaudio -----------------------------------------------------------------------------------
+# The sound output: one header, public domain or MIT-0, fetched at a pinned release and checked like FFmpeg.
+MINIAUDIO=0.11.25
+MINIAUDIO_SHA=ac7af4de748b7e26b777f37e01cee313a308a7296a3eb080e2906b320cc55c89
+mkdir -p miniaudio
+if [ ! -f miniaudio/miniaudio.h ] || ! echo "$MINIAUDIO_SHA  miniaudio/miniaudio.h" | sha256sum -c --quiet - 2>/dev/null; then
+    echo "fetching miniaudio $MINIAUDIO"
+    curl -fSL -o miniaudio/miniaudio.h.part "https://raw.githubusercontent.com/mackron/miniaudio/$MINIAUDIO/miniaudio.h"
+    mv miniaudio/miniaudio.h.part miniaudio/miniaudio.h
+fi
+echo "$MINIAUDIO_SHA  miniaudio/miniaudio.h" | sha256sum -c --quiet - || {
+    echo "miniaudio/miniaudio.h does not match its pinned sha256: delete it and run again" >&2
+    exit 1
+}
+
 # --- the shim -------------------------------------------------------------------------------------
 case "$PLATFORM" in
     windows-*)
@@ -74,7 +90,7 @@ case "$PLATFORM" in
         cat > "$BAT" <<EOF
 @set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 @call "$VS\\VC\\Auxiliary\\Build\\vcvars64.bat" >nul || exit /b 1
-cl /nologo /O2 /LD /MD /W3 /I "$(cygpath -w include)" /I "$(cygpath -w "$FF/include")" "$(cygpath -w ffwrap/ffwrap.c)" /Fe"$(cygpath -w build/ffwrap.dll)" /Fo"$(cygpath -w build/ffwrap.obj)" /link /LIBPATH:"$(cygpath -w "$FF/lib")" avformat.lib avcodec.lib swscale.lib avutil.lib || exit /b 1
+cl /nologo /O2 /LD /MD /W3 /I "$(cygpath -w include)" /I "$(cygpath -w miniaudio)" /I "$(cygpath -w "$FF/include")" "$(cygpath -w ffwrap/ffwrap.c)" "$(cygpath -w ffwrap/audio.c)" "$(cygpath -w ffwrap/miniaudio.c)" /Fe"$(cygpath -w build/ffwrap.dll)" /Fo$(cygpath -w build)\ /link /LIBPATH:"$(cygpath -w "$FF/lib")" avformat.lib avcodec.lib swresample.lib swscale.lib avutil.lib || exit /b 1
 EOF
         cmd.exe //c "$(cygpath -w "$BAT")"
         for lib in $LIBS; do
@@ -87,9 +103,12 @@ EOF
         ;;
     linux-*)
         CC=${CC:-cc}
-        # $ORIGIN: the shim finds FFmpeg beside itself, wherever the jar was extracted to.
-        "$CC" -O2 -shared -fPIC -Wall -I include -I "$FF/include" ffwrap/ffwrap.c -o build/libffwrap.so \
-            -L "$FF/lib" -lavformat -lavcodec -lswscale -lavutil -Wl,-rpath,'$ORIGIN'
+        # $ORIGIN: the shim finds FFmpeg beside itself, wherever the jar was extracted to. Hidden by default,
+        # so only the FFW_API functions are exported, not miniaudio's or the shim's own.
+        "$CC" -O2 -shared -fPIC -Wall -fvisibility=hidden -I include -I miniaudio -I "$FF/include" \
+            ffwrap/ffwrap.c ffwrap/audio.c ffwrap/miniaudio.c -o build/libffwrap.so \
+            -L "$FF/lib" -lavformat -lavcodec -lswresample -lswscale -lavutil -lpthread -lm -ldl \
+            -Wl,-rpath,'$ORIGIN'
         for lib in $LIBS; do
             # The soname, libavutil.so.60: what the libraries name each other by.
             file=$(cd "$FF/lib" && ls "lib$lib".so.[0-9]* | grep -E '\.so\.[0-9]+$')

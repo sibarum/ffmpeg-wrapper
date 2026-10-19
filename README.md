@@ -1,7 +1,8 @@
 # ffmpeg-wrapper
 
-Panama (FFM) bindings for one C ABI over every video FFmpeg can decode. Hand-written downcalls over a
-sixteen-function header and a small C shim behind it, with no jextract, no JNI and no code generation.
+Panama (FFM) bindings for one C ABI over every video FFmpeg can decode, and the sound that goes with it.
+Hand-written downcalls over a twenty-seven-function header and a small C shim behind it, with no jextract,
+no JNI and no code generation.
 
 ```java
 try (Video video = Ffmpeg.open(path)) {
@@ -12,6 +13,12 @@ try (Video video = Ffmpeg.open(path)) {
         f.ptsMicros();                 // when it is shown
     }
     video.seek(12_500_000);            // exact: the next frame is the one showing at 12.5 s
+}
+
+try (Audio sound = Ffmpeg.openAudio(path)) {
+    sound.play();                      // out of the speakers, decoded on a thread of its own
+    sound.clockMicros();               // the time being heard now: show the frame due then
+    sound.seek(12_500_000);            // exact, playing or paused
 }
 ```
 
@@ -24,8 +31,8 @@ imagelib-wrapper's rule, applied to video: format knowledge stops at this bounda
 
 **FFmpeg's structs never cross into Java.** FFmpeg's API is a few hundred structs whose layouts move
 between major versions, and binding them from Java would mean regenerating every time FFmpeg does. So a
-shim in C (`native/ffwrap/ffwrap.c`, about 400 lines) is the only code that knows them. It exposes an
-opaque handle and numbers. Moving to a newer FFmpeg is a recompile of the shim, and the Java does not
+shim in C (`native/ffwrap/`, about 900 lines) is the only code that knows them. It exposes two
+opaque handles and numbers. Moving to a newer FFmpeg is a recompile of the shim, and the Java does not
 change.
 
 ## Formats
@@ -46,8 +53,29 @@ Frames come out at the **display** size: the sample aspect ratio is applied to t
 DVD video is not squashed. A rotation in the file's display matrix (phone video shot upright) is
 **not** applied yet.
 
-**Video only.** A file's sound is reported (`VideoInfo.audio()`) and not decoded: the stack has nowhere
-to play it yet.
+## Sound
+
+A `Video` reports that its file has sound (`VideoInfo.audio()`) and does not decode it. `Ffmpeg.openAudio`
+opens the same file's sound as an `Audio`: a second handle, with its own demuxer and decoder, so a video's
+exact, frame-numbered seeking never waits on the sound or the other way round.
+
+**The sound never comes into Java.** The shim decodes it on a thread of its own, about half a second
+ahead, resamples it with libswresample to float stereo at the output's own rate (5.1 is mixed down,
+mono goes to both sides), and hands it to [miniaudio](https://miniaud.io), which plays it out of the
+system's default output (WASAPI on Windows, PulseAudio or ALSA on Linux) and follows that output when it
+changes. Java only steers it, with play, pause, seek and volume, and reads its clock back. The audio
+thread never calls into Java, so a garbage collection cannot make the sound stutter.
+
+**The clock is what a player keeps time by**: `clockMicros()` is the time of the sound being *heard*
+now. It counts what the device has taken, takes off what the device holds but has not played yet, and
+runs on smoothly between the device's periods (10 ms on WASAPI). It never goes back except by a seek.
+It holds while paused. After a seek it says the place sought at once and stays there until the sound from
+there starts to be heard. A gap in the stream is filled with silence, so the count stays the stream's
+time. Showing each frame when this clock reaches it keeps the picture with the sound, the way players do.
+
+`Audio.Output.NOWHERE` plays to miniaudio's null device, which drains the sound in real time and drops
+it. The clock runs as it would with speakers, which is what the tests use on a machine with no sound
+card.
 
 ## Licence: LGPL, shared
 
@@ -58,15 +86,21 @@ libraries beside the shim, which a user can replace, and that is what the LGPL a
 `FFMPEG-LICENSE.txt` and `FFMPEG-SOURCE.txt` (which build, and where its source is) travel in the jar
 beside the libraries, under `natives/<platform>/`.
 
+miniaudio is compiled into the shim. Its author offers it as public domain or MIT-0, so it asks for no
+notice.
+
 ## Layout
 
 ```
-native/include/ffwrap.h      the contract: 16 functions, 1 opaque handle, no struct crosses
-native/ffwrap/ffwrap.c       the C behind it: libavformat, libavcodec, libswscale
-native/build.sh              fetch the pinned FFmpeg, compile the shim, stage both into native/dist/bin/<platform>/
+native/include/ffwrap.h      the contract: 27 functions, 2 opaque handles, no struct crosses
+native/ffwrap/ffwrap.c       pictures: libavformat, libavcodec, libswscale
+native/ffwrap/audio.c        sound: libavformat, libavcodec, libswresample, miniaudio; its thread and clock
+native/ffwrap/miniaudio.c    miniaudio's implementation (device layer only, see ma.h)
+native/build.sh              fetch the pinned FFmpeg and miniaudio, compile the shim, stage it with FFmpeg into native/dist/bin/<platform>/
 src/main/java/sibarum/ffmpeg/
-    Ffmpeg.java              open a file; FFmpeg's version
+    Ffmpeg.java              open a file, or its sound; FFmpeg's version
     Video.java               an open file: info, output size, next frame, seek, close
+    Audio.java               its sound: play, pause, seek, volume, clock, close
     VideoInfo.java, Frame.java, VideoException.java
     CApi.java                one line per header function
     NativeLib.java           find, extract, load: six libraries, in order
@@ -78,13 +112,14 @@ types, not a second API.
 ## Building
 
 ```bash
-./native/build.sh    # fetches FFmpeg into native/ffmpeg/, stages native/dist/bin/<platform>/
+./native/build.sh    # fetches FFmpeg and miniaudio, stages native/dist/bin/<platform>/
 mvn install          # bundles it into the jar; tests need --enable-native-access (surefire is set up)
 ```
 
 `build.sh` pins one BtbN autobuild (`RELEASE` and `BUILD` at its top, a month's last build, which BtbN
-keeps) and checks the download against its sha256. A bump changes those three lines together. The
-native side needs a C compiler and nothing else:
+keeps) and checks the download against its sha256. A bump changes those three lines together. miniaudio
+is pinned the same way (`MINIAUDIO` and `MINIAUDIO_SHA`), one header fetched into `native/miniaudio/`.
+The native side needs a C compiler and nothing else:
 
 - **Windows:** the Visual Studio C++ build tools. `build.sh` finds them through `vswhere`, and runs from
   Git Bash.
@@ -124,7 +159,10 @@ the `LinkageError` of the failed load, so a caller can tell a missing decoder fr
   for example `could not open the file: Invalid data found when processing input (moov atom not found)`.
 - **One thread per `Video` at a time.** Different videos on different threads do not interact.
   FFmpeg's own frame threads are used inside each decoder (`thread_count = 0`, as many as the machine
-  has).
+  has). An `Audio` may be called from any thread. It brings two threads of its own, its decoder and
+  miniaudio's device thread, and `close()` ends both.
+- **No sound device is an exception, not a hang.** `openAudio` throws when the output will not open,
+  so a player can carry on with the pictures alone.
 
 ## Tests
 
@@ -134,8 +172,9 @@ suite that never crossed the boundary would say nothing at all.
 The fixtures are three seconds at 64x48 and 10 fps: one second red, one green, one blue, with a
 keyframe every ten frames. The same picture comes in three codecs and containers: `rgb.mp4` is H.264
 (openh264) with AAC sound, `rgb.webm` is VP9, and `rgb.mkv` is AV1 (libaom). A solid colour survives any
-lossy codec, so the tests can check pixels as well as counts and timestamps. They were made with the
-`ffmpeg.exe` that comes with the pinned build:
+lossy codec, so the tests can check pixels as well as counts and timestamps. The sound, a 440 Hz tone,
+is played to `Audio.Output.NOWHERE`, so the clock tests run in real time without a speaker. The fixtures
+were made with the `ffmpeg.exe` that comes with the pinned build:
 
 ```bash
 FF=native/ffmpeg/ffmpeg-n8.1.3-9-g29e619e767-win64-lgpl-shared-8.1/bin/ffmpeg.exe

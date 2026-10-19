@@ -8,7 +8,9 @@
         { "returnType": "jdouble", "parameterTypes": ["void*"] },
         { "returnType": "jint", "parameterTypes": ["void*", "jint", "jint"] },
         { "returnType": "jint", "parameterTypes": ["void*", "jlong"] },
-        { "returnType": "void", "parameterTypes": ["void*"] }
+        { "returnType": "void", "parameterTypes": ["void*"] },
+        { "returnType": "void*", "parameterTypes": ["void*", "jint"] },
+        { "returnType": "void", "parameterTypes": ["void*", "jfloat"] }
       ]
   }
 }

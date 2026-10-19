@@ -1,10 +1,11 @@
 /*
  * ffwrap — the C behind ../include/ffwrap.h: libavformat to read a file, libavcodec to decode its
- * video, libswscale to turn each frame into RGBA8 at the size asked for.
+ * video, libswscale to turn each frame into RGBA8 at the size asked for. Sound is audio.c's.
  *
- * Everything that knows FFmpeg's structs is in this file. The Java side sees a handle and numbers.
+ * Everything that knows FFmpeg's structs is in these two files. The Java side sees handles and numbers.
  */
 #include "ffwrap.h"
+#include "internal.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,7 +27,7 @@
 static FFW_TLS char err_text[512];
 static FFW_TLS int err_set;
 
-static void fail(const char *fmt, ...) {
+void ffwi_fail(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
     vsnprintf(err_text, sizeof err_text, fmt, args);
@@ -36,7 +37,7 @@ static void fail(const char *fmt, ...) {
 
 /* FFmpeg's log, kept rather than printed: a library writing to the host's stderr is a library talking
  * over its caller. The last error a demuxer or decoder logged on this thread is often the better reason
- * ("moov atom not found" over "Invalid data found when processing input"), so fail_av adds it. */
+ * ("moov atom not found" over "Invalid data found when processing input"), so ffwi_fail_av adds it. */
 static FFW_TLS char log_text[256];
 
 static void keep_log(void *avcl, int level, const char *fmt, va_list args) {
@@ -51,14 +52,19 @@ static void keep_log(void *avcl, int level, const char *fmt, va_list args) {
     }
 }
 
+void ffwi_listen(void) {
+    av_log_set_callback(keep_log);
+    log_text[0] = '\0';
+}
+
 /* What went wrong, in FFmpeg's words, after what this was doing. */
-static void fail_av(const char *doing, int code) {
+void ffwi_fail_av(const char *doing, int code) {
     char why[AV_ERROR_MAX_STRING_SIZE];
     av_strerror(code, why, sizeof why);
     if (log_text[0] != '\0') {
-        fail("%s: %s (%s)", doing, why, log_text);
+        ffwi_fail("%s: %s (%s)", doing, why, log_text);
     } else {
-        fail("%s: %s", doing, why);
+        ffwi_fail("%s: %s", doing, why);
     }
 }
 
@@ -103,7 +109,7 @@ void ffw_close(FfwVideo *v) {
 static int resize(FfwVideo *v, uint32_t w, uint32_t h) {
     uint8_t *pixels = av_malloc((size_t) w * h * 4);
     if (pixels == NULL) {
-        fail("out of memory for a %ux%u frame", w, h);
+        ffwi_fail("out of memory for a %ux%u frame", w, h);
         return 0;
     }
     av_free(v->pixels);
@@ -115,51 +121,50 @@ static int resize(FfwVideo *v, uint32_t w, uint32_t h) {
 
 FfwVideo *ffw_open(const char *path) {
     if (path == NULL || path[0] == '\0') {
-        fail("no path to open");
+        ffwi_fail("no path to open");
         return NULL;
     }
-    av_log_set_callback(keep_log);
-    log_text[0] = '\0';
+    ffwi_listen();
     FfwVideo *v = av_mallocz(sizeof *v);
     if (v == NULL) {
-        fail("out of memory");
+        ffwi_fail("out of memory");
         return NULL;
     }
     int code = avformat_open_input(&v->format, path, NULL, NULL);
     if (code < 0) {
-        fail_av("could not open the file", code);
+        ffwi_fail_av("could not open the file", code);
         av_free(v);
         return NULL;
     }
     code = avformat_find_stream_info(v->format, NULL);
     if (code < 0) {
-        fail_av("could not read the streams", code);
+        ffwi_fail_av("could not read the streams", code);
         ffw_close(v);
         return NULL;
     }
     const AVCodec *decoder = NULL;
     v->index = av_find_best_stream(v->format, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
     if (v->index < 0) {
-        fail(v->index == AVERROR_DECODER_NOT_FOUND ? "no decoder for the video stream" : "no video stream");
+        ffwi_fail(v->index == AVERROR_DECODER_NOT_FOUND ? "no decoder for the video stream" : "no video stream");
         ffw_close(v);
         return NULL;
     }
     v->stream = v->format->streams[v->index];
     /* A cover picture is a stream of one frame; a file that is only that is not a video. */
     if (v->stream->disposition & AV_DISPOSITION_ATTACHED_PIC) {
-        fail("no video stream, only a cover picture");
+        ffwi_fail("no video stream, only a cover picture");
         ffw_close(v);
         return NULL;
     }
     v->codec = avcodec_alloc_context3(decoder);
     if (v->codec == NULL) {
-        fail("out of memory for the decoder");
+        ffwi_fail("out of memory for the decoder");
         ffw_close(v);
         return NULL;
     }
     code = avcodec_parameters_to_context(v->codec, v->stream->codecpar);
     if (code < 0) {
-        fail_av("could not set the decoder up", code);
+        ffwi_fail_av("could not set the decoder up", code);
         ffw_close(v);
         return NULL;
     }
@@ -167,21 +172,21 @@ FfwVideo *ffw_open(const char *path) {
     v->codec->pkt_timebase = v->stream->time_base;
     code = avcodec_open2(v->codec, decoder, NULL);
     if (code < 0) {
-        fail_av("could not open the decoder", code);
+        ffwi_fail_av("could not open the decoder", code);
         ffw_close(v);
         return NULL;
     }
     v->packet = av_packet_alloc();
     v->frame = av_frame_alloc();
     if (v->packet == NULL || v->frame == NULL) {
-        fail("out of memory");
+        ffwi_fail("out of memory");
         ffw_close(v);
         return NULL;
     }
     int w = v->codec->width;
     int h = v->codec->height;
     if (w <= 0 || h <= 0) {
-        fail("the video stream has no size (%dx%d)", w, h);
+        ffwi_fail("the video stream has no size (%dx%d)", w, h);
         ffw_close(v);
         return NULL;
     }
@@ -244,7 +249,7 @@ int32_t ffw_has_audio(const FfwVideo *v) {
 
 int32_t ffw_output(FfwVideo *v, uint32_t width, uint32_t height) {
     if (width == 0 || height == 0 || width > 16384 || height > 16384) {
-        fail("an output of %ux%u was asked for", width, height);
+        ffwi_fail("an output of %ux%u was asked for", width, height);
         return 0;
     }
     if (width == v->out_w && height == v->out_h) {
@@ -265,7 +270,7 @@ static int decode(FfwVideo *v) {
             return 0;
         }
         if (code != AVERROR(EAGAIN)) {
-            fail_av("could not decode a frame", code);
+            ffwi_fail_av("could not decode a frame", code);
             return -1;
         }
         if (v->drained) {
@@ -276,13 +281,13 @@ static int decode(FfwVideo *v) {
             v->drained = 1;
             code = avcodec_send_packet(v->codec, NULL);
             if (code < 0 && code != AVERROR_EOF) {
-                fail_av("could not finish decoding", code);
+                ffwi_fail_av("could not finish decoding", code);
                 return -1;
             }
             continue;
         }
         if (code < 0) {
-            fail_av("could not read the file", code);
+            ffwi_fail_av("could not read the file", code);
             return -1;
         }
         if (v->packet->stream_index == v->index) {
@@ -290,7 +295,7 @@ static int decode(FfwVideo *v) {
             av_packet_unref(v->packet);
             /* A damaged packet is the decoder's to skip, as a player would; only running out of memory stops. */
             if (code == AVERROR(ENOMEM)) {
-                fail_av("could not decode a packet", code);
+                ffwi_fail_av("could not decode a packet", code);
                 return -1;
             }
         } else {
@@ -320,7 +325,7 @@ static int convert(FfwVideo *v) {
                                     (int) v->out_w, (int) v->out_h, AV_PIX_FMT_RGBA,
                                     flags | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, NULL, NULL, NULL);
     if (v->scale == NULL) {
-        fail("no conversion from %s at %dx%d to RGBA at %ux%u",
+        ffwi_fail("no conversion from %s at %dx%d to RGBA at %ux%u",
              av_get_pix_fmt_name((enum AVPixelFormat) f->format), f->width, f->height, v->out_w, v->out_h);
         return 0;
     }
@@ -333,7 +338,7 @@ static int convert(FfwVideo *v) {
     int stride[4] = {(int) v->out_w * 4, 0, 0, 0};
     int rows = sws_scale(v->scale, (const uint8_t *const *) f->data, f->linesize, 0, f->height, dst, stride);
     if (rows <= 0) {
-        fail("could not convert a frame to RGBA");
+        ffwi_fail("could not convert a frame to RGBA");
         return 0;
     }
     return 1;
@@ -383,7 +388,7 @@ int32_t ffw_seek(FfwVideo *v, int64_t us) {
         /* Some containers seek only by bytes or only to the start; the start always works. */
         code = avformat_seek_file(v->format, v->index, INT64_MIN, ts, ts, 0);
         if (code < 0) {
-            fail_av("could not seek", code);
+            ffwi_fail_av("could not seek", code);
             return 0;
         }
     }

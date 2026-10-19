@@ -12,7 +12,8 @@
     <description>
         Panama (FFM) bindings for one C ABI over every video FFmpeg decodes: H.264, HEVC, VP8, VP9,
         AV1 and the rest, in MP4, MKV, WebM, MOV and the rest, each frame as RGBA8 at the size asked
-        for. Hand-written downcalls over a sixteen-function header (native/include/ffwrap.h) and a
+        for, and its sound played out of the speakers (miniaudio) with a clock to show the frames by.
+        Hand-written downcalls over a twenty-seven-function header (native/include/ffwrap.h) and a
         small C shim behind it, so FFmpeg's structs never cross into Java — no jextract, no JNI. The
         shim is built in native/ (see native/build.sh) against a pinned LGPL shared FFmpeg, and both
         are bundled into the jar from native/dist/bin at package time; at runtime they are extracted
