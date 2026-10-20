@@ -3,3 +3,6 @@
 *.mp4 binary
 *.webm binary
 *.mkv binary
+# Shell scripts run under bash on every OS, Git Bash included: checked out with CRLF, "#!/usr/bin/env bash<CR>" is
+# a bad interpreter and every line ends in a stray \r.
+*.sh text eol=lf
