@@ -5,3 +5,4 @@ native/ffmpeg/
 .idea/
 *.iml
 native/miniaudio/
+.claude/
