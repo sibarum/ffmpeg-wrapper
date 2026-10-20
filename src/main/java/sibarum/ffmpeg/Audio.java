@@ -128,10 +128,7 @@ public final class Audio implements AutoCloseable {
             return;
         }
         handle = null;
-        call(() -> {
-            CApi.ffw_audio_close.invokeExact(h);
-            return null;
-        }, "ffw_audio_close");
+        Ffmpeg.closeAudio(h);
     }
 
     @Override

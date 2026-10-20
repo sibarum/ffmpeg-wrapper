@@ -4,12 +4,18 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -120,6 +126,29 @@ class AudioTest {
         a.close();
         assertTrue(a.closed());
         assertThrows(VideoException.class, a::clockMicros);
+    }
+
+    /**
+     * As for a {@code Video}: once the sound's handle is open, with its thread started and its device held, an
+     * {@code Audio} that then fails to be made closes it on the way out. The failure is put in by hand.
+     */
+    @Test
+    void aHandleWhoseAudioFailsToBeMadeIsClosed() throws Throwable {
+        MemorySegment handle;
+        try (Arena arena = Arena.ofConfined()) {
+            handle = (MemorySegment) CApi.ffw_audio_open.invokeExact(
+                    arena.allocateFrom(fixture("rgb.mp4").toString()), 1);
+        }
+        assertNotEquals(0, handle.address(), "the fixture opens");
+        List<MemorySegment> freed = new ArrayList<>();
+        VideoException failure = new VideoException("the sound's facts would not read");
+        assertSame(failure, assertThrows(VideoException.class, () -> Ffmpeg.adopt(handle, h -> {
+            throw failure;
+        }, h -> {
+            freed.add(h);
+            Ffmpeg.closeAudio(h);
+        })));
+        assertEquals(List.of(handle), freed);
     }
 
     /** A fixture as a file, since FFmpeg opens paths. */

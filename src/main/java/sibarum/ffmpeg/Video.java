@@ -117,11 +117,7 @@ public final class Video implements AutoCloseable {
             return;
         }
         handle = null;
-        try {
-            CApi.ffw_close.invokeExact(h);
-        } catch (Throwable t) {
-            throw downcallFailed("ffw_close", t);
-        }
+        Ffmpeg.closeVideo(h);
     }
 
     @Override

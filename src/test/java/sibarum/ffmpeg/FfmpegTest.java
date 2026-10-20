@@ -6,6 +6,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -15,7 +17,9 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -138,6 +142,66 @@ class FfmpegTest {
         assertThrows(VideoException.class, v::next);
     }
 
+    /**
+     * Once the native open has succeeded, nothing else can close the handle if the {@code Video} around it then
+     * fails to be made, so the open path must. The failure is put in by hand: a file that opens never fails the
+     * reads that follow.
+     */
+    @Test
+    void aHandleWhoseVideoFailsToBeMadeIsClosed() throws Throwable {
+        for (RuntimeException failure : List.of(new VideoException("the stream's facts would not read"),
+                new IllegalStateException("anything else"))) {
+            MemorySegment handle = rawOpen(fixture("rgb.mp4"));
+            List<MemorySegment> freed = new ArrayList<>();
+            RuntimeException e = assertThrows(RuntimeException.class, () -> Ffmpeg.adopt(handle, h -> {
+                throw failure;
+            }, h -> {
+                freed.add(h);
+                Ffmpeg.closeVideo(h);
+            }));
+            assertSame(failure, e, "the failure goes on as it was");
+            assertEquals(List.of(handle), freed);
+        }
+    }
+
+    @Test
+    void anErrorWhileMakingTheVideoStillClosesTheHandle() throws Throwable {
+        MemorySegment handle = rawOpen(fixture("rgb.mp4"));
+        List<MemorySegment> freed = new ArrayList<>();
+        OutOfMemoryError oom = new OutOfMemoryError("no room for the frame");
+        assertSame(oom, assertThrows(OutOfMemoryError.class, () -> Ffmpeg.adopt(handle, h -> {
+            throw oom;
+        }, h -> {
+            freed.add(h);
+            Ffmpeg.closeVideo(h);
+        })));
+        assertEquals(List.of(handle), freed);
+    }
+
+    @Test
+    void aCloseThatFailsTooIsKeptBesideTheFirstFailure() throws Throwable {
+        MemorySegment handle = rawOpen(fixture("rgb.mp4"));
+        VideoException first = new VideoException("first");
+        VideoException e = assertThrows(VideoException.class, () -> Ffmpeg.adopt(handle, h -> {
+            throw first;
+        }, h -> {
+            Ffmpeg.closeVideo(h);
+            throw new VideoException("the close failed too");
+        }));
+        assertSame(first, e);
+        assertEquals("the close failed too", e.getSuppressed()[0].getMessage());
+    }
+
+    @Test
+    void aVideoThatIsMadeKeepsItsHandle() throws Throwable {
+        MemorySegment handle = rawOpen(fixture("rgb.mp4"));
+        List<MemorySegment> freed = new ArrayList<>();
+        try (Video v = Ffmpeg.adopt(handle, h -> new Video(h, Path.of("rgb.mp4")), freed::add)) {
+            assertEquals(64, v.info().width());
+            assertTrue(freed.isEmpty());
+        }
+    }
+
     @Test
     void readsLibsTxtInOrder() {
         assertEquals(List.of("avutil-60.dll", "ffwrap.dll"), NativeLib.libraries("avutil-60.dll\r\n\n  ffwrap.dll \n"));
@@ -153,6 +217,15 @@ class FfmpegTest {
                 assertTrue(rgb[c] > 200 && rgb[other] < 60,
                         "expected channel " + c + " at " + f.ptsMicros() + "us, was " + rgb[0] + "," + rgb[1] + "," + rgb[2]);
             }
+        }
+    }
+
+    /** The native open alone, with no {@code Video} made around it. */
+    private static MemorySegment rawOpen(Path file) throws Throwable {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment handle = (MemorySegment) CApi.ffw_open.invokeExact(arena.allocateFrom(file.toString()));
+            assertNotEquals(0, handle.address(), "the fixture opens");
+            return handle;
         }
     }
 

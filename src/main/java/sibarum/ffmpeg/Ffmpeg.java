@@ -3,6 +3,8 @@ package sibarum.ffmpeg;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Frames, from any video FFmpeg can decode: H.264, HEVC, VP8, VP9, AV1, MPEG-4, ProRes and the rest, in
@@ -60,7 +62,7 @@ public final class Ffmpeg {
         if (handle.address() == 0) {
             throw new VideoException("could not open " + file + ": " + Video.lastError());
         }
-        return new Video(handle, file);
+        return adopt(handle, h -> new Video(h, file), Ffmpeg::closeVideo);
     }
 
     /** {@link #openAudio(Path, Audio.Output) Open} {@code file}'s sound, to play out of the system's speakers. */
@@ -91,7 +93,41 @@ public final class Ffmpeg {
         if (handle.address() == 0) {
             throw new VideoException("could not open the sound of " + file + ": " + Video.lastError());
         }
-        return new Audio(handle, file);
+        return adopt(handle, h -> new Audio(h, file), Ffmpeg::closeAudio);
+    }
+
+    /**
+     * {@code wrap} a handle that has just opened, or, if wrapping it throws anything (a downcall failing while
+     * the stream's facts are read, no memory left), {@code free} it before the throw goes on. The caller has
+     * nothing to close until the wrapper exists, so until then this is the only place that can.
+     */
+    static <T> T adopt(MemorySegment handle, Function<MemorySegment, T> wrap, Consumer<MemorySegment> free) {
+        try {
+            return wrap.apply(handle);
+        } catch (Throwable t) {
+            try {
+                free.accept(handle);
+            } catch (Throwable u) {
+                t.addSuppressed(u);
+            }
+            throw t;
+        }
+    }
+
+    static void closeVideo(MemorySegment handle) {
+        try {
+            CApi.ffw_close.invokeExact(handle);
+        } catch (Throwable t) {
+            throw Video.downcallFailed("ffw_close", t);
+        }
+    }
+
+    static void closeAudio(MemorySegment handle) {
+        try {
+            CApi.ffw_audio_close.invokeExact(handle);
+        } catch (Throwable t) {
+            throw Video.downcallFailed("ffw_audio_close", t);
+        }
     }
 
     static String string(MemorySegment s) {
