@@ -1,5 +1,7 @@
 package sibarum.ffmpeg;
 
+import sibarum.ffmpeg.spi.FfmpegNatives;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.foreign.SymbolLookup;
@@ -9,16 +11,16 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
+import java.util.ServiceLoader;
 
 /**
  * Locates and loads the {@code ffwrap} shim and the FFmpeg libraries under it.
  *
  * <p>Search order: the {@code ffmpeg.native.dir} system property (a directory laid out as
  * {@code native/build.sh} stages one), then an {@code ffmpeg} folder beside the running executable laid
- * out the same way (how a native image ships them), then the bundled classpath resources under
- * {@code /natives/<platform>/}, extracted together to one temp directory. Loading is idempotent and
- * thread-safe.
+ * out the same way (how a native image ships them), then the classpath resources the OS module on the
+ * class path names ({@link FfmpegNatives}), extracted together to one temp directory. Loading is
+ * idempotent and thread-safe. This class holds no platform knowledge of its own.
  *
  * <p><b>Six libraries, in an order.</b> Unlike imagelib, which is one library because its decoders are
  * Rust, this is FFmpeg's own shared libraries and a shim over them, and a library loaded by path finds
@@ -51,23 +53,15 @@ final class NativeLib {
         return lookup;
     }
 
-    /**
-     * The directory name a build stages into and this loader reads back — {@code native/build.sh}
-     * writes exactly these, so a new target is added in both places or in neither.
-     */
+    /** What the OS module calls this platform, for messages; {@code unknown} when there is no OS module. */
     static String platform() {
-        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        String arch = System.getProperty("os.arch", "").toLowerCase(Locale.ROOT);
-        String family = os.contains("win") ? "windows"
-                : os.contains("mac") || os.contains("darwin") ? "macos"
-                : os.contains("linux") ? "linux"
-                : os.isEmpty() ? "unknown" : os.split("\\s+")[0];
-        String cpu = switch (arch) {
-            case "amd64", "x86_64" -> "x86_64";
-            case "aarch64", "arm64" -> "aarch64";
-            default -> arch;
-        };
-        return family + "-" + cpu;
+        FfmpegNatives natives = natives();
+        return natives == null ? "unknown (no ffmpeg-wrapper OS module on the class path)" : natives.platform();
+    }
+
+    /** The one OS module on the class path, or null when there is none. */
+    private static FfmpegNatives natives() {
+        return ServiceLoader.load(FfmpegNatives.class).findFirst().orElse(null);
     }
 
     /** The file names in {@code libs.txt}, in its order: blank lines and surrounding space ignored. */
@@ -98,7 +92,12 @@ final class NativeLib {
     }
 
     private static Path extractBundled() throws IOException {
-        String root = "/natives/" + platform() + "/";
+        FfmpegNatives natives = natives();
+        String root = natives == null ? null : natives.resourceRoot();
+        if (root == null) {
+            throw new IOException("no bundled FFmpeg for " + platform()
+                    + " (add the ffmpeg-wrapper OS module for it, or set -Dffmpeg.native.dir)");
+        }
         Path tmp = Files.createTempDirectory("ffmpeg");
         tmp.toFile().deleteOnExit();
         String list = new String(resource(root + "libs.txt"), StandardCharsets.UTF_8);
@@ -121,7 +120,7 @@ final class NativeLib {
         try (InputStream in = NativeLib.class.getResourceAsStream(name)) {
             if (in == null) {
                 throw new IOException("bundled native missing: " + name
-                        + " (build it first — see native/build.sh — or set -Dffmpeg.native.dir)");
+                        + " (build it first with the OS module's native/build.sh, or set -Dffmpeg.native.dir)");
             }
             return in.readAllBytes();
         }

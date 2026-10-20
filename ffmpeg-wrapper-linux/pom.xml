@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>sibarum.ffmpeg</groupId>
+        <artifactId>ffmpeg-wrapper-parent</artifactId>
+        <version>0.1.2-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>ffmpeg-wrapper-linux</artifactId>
+
+    <name>ffmpeg-wrapper-linux</name>
+    <description>
+        ffmpeg-wrapper on Linux: the ffwrap shim (cc) and FFmpeg's shared libraries, built by native/build.sh into native/dist (not committed)
+        and bundled into this jar, and an FfmpegNatives saying where. ffmpeg-wrapper's OS-activated profile adds it.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>sibarum.ffmpeg</groupId>
+            <artifactId>ffmpeg-wrapper-api</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <!-- The build's staged output, one folder per architecture, as natives/<platform>/. -->
+            <resource>
+                <directory>native/dist</directory>
+                <targetPath>natives</targetPath>
+            </resource>
+        </resources>
+    </build>
+</project>

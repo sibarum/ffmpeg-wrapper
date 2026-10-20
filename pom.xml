@@ -5,20 +5,27 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>sibarum.ffmpeg</groupId>
-    <artifactId>ffmpeg-wrapper</artifactId>
+    <artifactId>ffmpeg-wrapper-parent</artifactId>
     <version>0.1.2-SNAPSHOT</version>
+    <packaging>pom</packaging>
 
-    <name>ffmpeg-wrapper</name>
+    <name>ffmpeg-wrapper-parent</name>
     <description>
-        Panama (FFM) bindings for one C ABI over every video FFmpeg decodes: H.264, HEVC, VP8, VP9,
-        AV1 and the rest, in MP4, MKV, WebM, MOV and the rest, each frame as RGBA8 at the size asked
-        for, and its sound played out of the speakers (miniaudio) with a clock to show the frames by.
-        Hand-written downcalls over a twenty-seven-function header (native/include/ffwrap.h) and a
-        small C shim behind it, so FFmpeg's structs never cross into Java — no jextract, no JNI. The
-        shim is built in native/ (see native/build.sh) against a pinned LGPL shared FFmpeg, and both
-        are bundled into the jar from native/dist/bin at package time; at runtime they are extracted
-        to a temp dir and loaded.
+        Video through FFmpeg, as modules: ffmpeg-wrapper (the Java API, holding no platform knowledge), and one
+        ffmpeg-wrapper-&lt;os&gt; module per operating system with that OS's build of the ffwrap shim and the
+        FFmpeg libraries under it. The shim's C source is shared, in native/; each OS module builds it with its own
+        native/build.sh.
     </description>
+
+    <modules>
+        <!-- Where an OS module's libraries are, as an interface the facade and the OS modules share. -->
+        <module>ffmpeg-wrapper-api</module>
+        <!-- The OS halves: each bundles only its own platform's libraries. ffmpeg-wrapper's profiles add one. -->
+        <module>ffmpeg-wrapper-windows</module>
+        <module>ffmpeg-wrapper-linux</module>
+        <!-- The library vexelray-codec depends on, under the artifactId it already names. -->
+        <module>ffmpeg-wrapper</module>
+    </modules>
 
     <properties>
         <maven.compiler.release>25</maven.compiler.release>
@@ -26,45 +33,51 @@
         <junit.version>5.11.4</junit.version>
     </properties>
 
-    <dependencies>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
-            <version>${junit.version}</version>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>sibarum.ffmpeg</groupId>
+                <artifactId>ffmpeg-wrapper-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>sibarum.ffmpeg</groupId>
+                <artifactId>ffmpeg-wrapper-windows</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>sibarum.ffmpeg</groupId>
+                <artifactId>ffmpeg-wrapper-linux</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${junit.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <build>
-        <resources>
-            <resource>
-                <directory>src/main/resources</directory>
-            </resource>
-            <!-- Bundle the native build output (not committed to git) into the jar, keeping the
-                 per-platform directory names build.sh stages into and NativeLib.java reads back. -->
-            <resource>
-                <directory>native/dist/bin</directory>
-                <targetPath>natives</targetPath>
-            </resource>
-        </resources>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.13.0</version>
-                <configuration>
-                    <target>${maven.compiler.release}</target>
-                    <release>${maven.compiler.release}</release>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.5.2</version>
-                <configuration>
-                    <argLine>--enable-native-access=ALL-UNNAMED</argLine>
-                </configuration>
-            </plugin>
-        </plugins>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                        <release>${maven.compiler.release}</release>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>3.5.2</version>
+                    <configuration>
+                        <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
     </build>
 </project>

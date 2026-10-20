@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>sibarum.ffmpeg</groupId>
+        <artifactId>ffmpeg-wrapper-parent</artifactId>
+        <version>0.1.2-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>ffmpeg-wrapper</artifactId>
+
+    <name>ffmpeg-wrapper</name>
+    <description>
+        Panama (FFM) bindings for one C ABI over every video FFmpeg decodes: H.264, HEVC, VP8, VP9,
+        AV1 and the rest, in MP4, MKV, WebM, MOV and the rest, each frame as RGBA8 at the size asked
+        for, and its sound played out of the speakers (miniaudio) with a clock to show the frames by.
+        Hand-written downcalls over a twenty-seven-function header (native/include/ffwrap.h) and a
+        small C shim behind it, so FFmpeg's structs never cross into Java — no jextract, no JNI. Holds
+        no platform knowledge: the shim and FFmpeg's libraries for this OS come from the
+        ffmpeg-wrapper-&lt;os&gt; module the profiles below add, which says where they are
+        (FfmpegNatives); at runtime they are extracted to a temp dir and loaded.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>sibarum.ffmpeg</groupId>
+            <artifactId>ffmpeg-wrapper-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <!-- Exactly one OS module, picked by the build host's OS, so every application on this library gets its
+         platform's FFmpeg without naming it. -->
+    <profiles>
+        <profile>
+            <id>platform-windows</id>
+            <activation><os><family>windows</family></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>sibarum.ffmpeg</groupId>
+                    <artifactId>ffmpeg-wrapper-windows</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation><os><family>unix</family><name>linux</name></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>sibarum.ffmpeg</groupId>
+                    <artifactId>ffmpeg-wrapper-linux</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+</project>

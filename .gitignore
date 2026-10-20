@@ -6,3 +6,6 @@ native/ffmpeg/
 *.iml
 native/miniaudio/
 .claude/
+*/native/dist/
+*/native/build/
+*/native/ffmpeg/
