@@ -35,7 +35,7 @@ BAT=build/cl.bat
 cat > "$BAT" <<BATEOF
 @set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 @call "$VS\\VC\\Auxiliary\\Build\\vcvars64.bat" >nul || exit /b 1
-cl /nologo /O2 /LD /MD /W3 /I "$(cygpath -w "$COMMON/include")" /I "$(cygpath -w "$COMMON/miniaudio")" /I "$(cygpath -w "$FF/include")" "$(cygpath -w "$COMMON/ffwrap/ffwrap.c")" "$(cygpath -w "$COMMON/ffwrap/audio.c")" "$(cygpath -w "$COMMON/ffwrap/miniaudio.c")" /Fe"$(cygpath -w build/ffwrap.dll)" /Fo$(cygpath -w build)\ /link /LIBPATH:"$(cygpath -w "$FF/lib")" avformat.lib avcodec.lib swresample.lib swscale.lib avutil.lib || exit /b 1
+cl /nologo /O2 /LD /MD /W3 /I "$(cygpath -w "$COMMON/include")" /I "$(cygpath -w "$COMMON/miniaudio")" /I "$(cygpath -w "$FF/include")" "$(cygpath -w "$COMMON/ffwrap/ffwrap.c")" "$(cygpath -w "$COMMON/ffwrap/audio.c")" "$(cygpath -w "$COMMON/ffwrap/encode.c")" "$(cygpath -w "$COMMON/ffwrap/miniaudio.c")" /Fe"$(cygpath -w build/ffwrap.dll)" /Fo$(cygpath -w build)\ /link /LIBPATH:"$(cygpath -w "$FF/lib")" avformat.lib avcodec.lib swresample.lib swscale.lib avutil.lib || exit /b 1
 BATEOF
 cmd.exe //c "$(cygpath -w "$BAT")"
 for lib in $LIBS; do

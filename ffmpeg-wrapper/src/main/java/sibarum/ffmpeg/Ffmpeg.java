@@ -28,6 +28,9 @@ import java.util.function.Function;
  * and does not decode it; {@link #openAudio} opens the same file's sound as an {@link Audio}, which plays it
  * out of a speaker and keeps the clock a player shows its frames by.
  *
+ * <p><b>And the other way: frames into a file.</b> {@link #record} takes RGBA8 frames as they are made, each with
+ * its own time, and writes AV1 in Matroska or WebM, fast enough to record a window while it runs.
+ *
  * <p>Callers need {@code --enable-native-access=ALL-UNNAMED} (or their module) on the command line.
  */
 public final class Ffmpeg {
@@ -97,6 +100,36 @@ public final class Ffmpeg {
     }
 
     /**
+     * Create {@code file} and record into it: frames handed to the {@link Recording} as they are made, encoded to AV1
+     * in the container the file's name asks for ({@code .mkv} or {@code .webm}), on a canvas of
+     * {@code width x height}, the largest a frame will be (a smaller frame goes at its top left, on black). An
+     * existing file is replaced. Throws {@link VideoException} if no encoder opens or the file cannot be created.
+     */
+    public static Recording record(Path file, int width, int height, Recording.Settings settings) {
+        if (file == null) {
+            throw new VideoException("no file to record to");
+        }
+        if (width <= 0 || height <= 0) {
+            throw new VideoException("a zero-sized recording was asked for: " + width + "x" + height);
+        }
+        int encoder = settings.encoder() == Recording.Encoder.HARDWARE ? 1 : 0;
+        MemorySegment handle;
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment path = arena.allocateFrom(file.toAbsolutePath().toString());
+            try {
+                handle = (MemorySegment) CApi.ffw_writer_open.invokeExact(path, width, height,
+                        settings.frameRate(), settings.quality(), encoder);
+            } catch (Throwable t) {
+                throw Video.downcallFailed("ffw_writer_open", t);
+            }
+        }
+        if (handle.address() == 0) {
+            throw new VideoException("could not record to " + file + ": " + Video.lastError());
+        }
+        return adopt(handle, h -> new Recording(h, file, width, height), Ffmpeg::closeRecording);
+    }
+
+    /**
      * {@code wrap} a handle that has just opened, or, if wrapping it throws anything (a downcall failing while
      * the stream's facts are read, no memory left), {@code free} it before the throw goes on. The caller has
      * nothing to close until the wrapper exists, so until then this is the only place that can.
@@ -119,6 +152,15 @@ public final class Ffmpeg {
             CApi.ffw_close.invokeExact(handle);
         } catch (Throwable t) {
             throw Video.downcallFailed("ffw_close", t);
+        }
+    }
+
+    /** Finish and free a recording: 1 if its file is whole, else 0. */
+    static int closeRecording(MemorySegment handle) {
+        try {
+            return (int) CApi.ffw_writer_close.invokeExact(handle);
+        } catch (Throwable t) {
+            throw Video.downcallFailed("ffw_writer_close", t);
         }
     }
 

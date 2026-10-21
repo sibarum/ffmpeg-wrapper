@@ -35,7 +35,7 @@ mkdir -p "$DEST" build
 : > "$DEST/libs.txt"
 
 "${CC:-cc}" -O2 -shared -fPIC -Wall -fvisibility=hidden -I "$COMMON/include" -I "$COMMON/miniaudio" -I "$FF/include" \
-    "$COMMON/ffwrap/ffwrap.c" "$COMMON/ffwrap/audio.c" "$COMMON/ffwrap/miniaudio.c" -o build/libffwrap.so \
+    "$COMMON/ffwrap/ffwrap.c" "$COMMON/ffwrap/audio.c" "$COMMON/ffwrap/encode.c" "$COMMON/ffwrap/miniaudio.c" -o build/libffwrap.so \
     -L "$FF/lib" -lavformat -lavcodec -lswresample -lswscale -lavutil -lpthread -lm -ldl \
     -Wl,-rpath,'$ORIGIN'
 for lib in $LIBS; do

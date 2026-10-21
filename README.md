@@ -1,8 +1,8 @@
 # ffmpeg-wrapper
 
-Panama (FFM) bindings for one C ABI over every video FFmpeg can decode, and the sound that goes with it.
-Hand-written downcalls over a twenty-seven-function header and a small C shim behind it, with no jextract,
-no JNI and no code generation.
+Panama (FFM) bindings for one C ABI over every video FFmpeg can decode, the sound that goes with it, and
+AV1 recorded in real time from frames as they are made. Hand-written downcalls over a thirty-three-function
+header and a small C shim behind it, with no jextract, no JNI and no code generation.
 
 ```java
 try (Video video = Ffmpeg.open(path)) {
@@ -20,6 +20,10 @@ try (Audio sound = Ffmpeg.openAudio(path)) {
     sound.clockMicros();               // the time being heard now: show the frame due then
     sound.seek(12_500_000);            // exact, playing or paused
 }
+
+try (Recording rec = Ffmpeg.record(Path.of("window.mkv"), 2560, 1440, Recording.Settings.DEFAULT)) {
+    rec.frame(rgba, w, h, presentedMicros);  // RGBA8 in, any size on a 2560x1440 canvas; AV1 out
+}                                            // the file is whole once this returns
 ```
 
 ## The one idea
@@ -77,11 +81,92 @@ time. Showing each frame when this clock reaches it keeps the picture with the s
 it. The clock runs as it would with speakers, which is what the tests use on a machine with no sound
 card.
 
+## Recording
+
+`Ffmpeg.record` goes the other way. It takes RGBA8 frames as they are made and writes **AV1** into
+Matroska or WebM, whichever the file's name says (`.mkv`, `.webm`). It is meant for recording a window
+while it runs. The encoder and the muxer were already in the pinned build, so recording added no library,
+only `native/ffwrap/encode.c` and six functions in the header.
+
+**Every frame brings its own time.** Matroska stamps each frame to the millisecond, so frames need not
+come at a steady rate. A window that draws nothing while idle is recorded as it was: the pause lasts as
+long as it did, and no frame is repeated. Times must rise. A frame that falls in the last frame's
+millisecond is dropped (`frame` returns false), because the file could not tell the two apart. The
+rate in `Settings` is a hint for rate control and the keyframe interval (one every five seconds), not
+a schedule.
+
+**A canvas, so a window can be resized while it is recorded.** The size given to `record` is a canvas,
+and every frame in the file is that size. Each frame handed in carries its own size. A smaller one goes
+at the canvas's top left, unscaled, and the rest of the canvas is black. A larger one is cut to the
+canvas. The canvas is meant to be the largest a frame will be, such as the screen's size.
+
+AV1 itself can change size from frame to frame. Matroska's track header holds only one size, though, and
+players differ on whether they follow the bitstream or the header. A fixed canvas plays everywhere and
+keeps every pixel sharp. The black is almost free in the file: a 960x540 picture on a 1920x1080 canvas
+made a file 4% larger than the same picture at 960x540. It is not free in time, because the encoder
+works on the whole canvas. That same file took about three times the CPU. So a recording costs what its
+canvas costs (about 7 ms a frame at 1080p), however small the window.
+
+**Real time.** Two encoders can be asked for:
+
+| `Recording.Encoder` | Encoder | 1080p, on the Core Ultra 7 255HX laptop this was built on |
+| --- | --- | --- |
+| `SOFTWARE` (the default) | SVT-AV1, in its real-time mode (`rtc=1`: no look-ahead, no reordering), preset 10, or 12 above 1440p | about 7 ms a frame |
+| `HARDWARE` | the GPU's: `av1_nvenc`, then `av1_qsv`, then `av1_amf`, whichever opens first, and SVT-AV1 when none does | about 4 ms a frame (NVENC) |
+
+Both times count the conversion from RGBA, so either encoder keeps up with 60 fps with time to spare.
+Software is the default because it gives the same file on every machine and has AV1's screen-content
+tools (palette and intra block copy), which are what flat UI and text need. Its screen-content detection
+is left at SVT-AV1's default (`scm=2`, decide per frame). Whether that switches the tools on for a real
+window in real-time mode has not been measured. Forcing them (`scm=1`) cost about a fifth more CPU on a
+synthetic test picture. `recording.encoder()` names the encoder that opened.
+
+On Linux, NVENC and Quick Sync are tried the same way. VAAPI, which is how most Intel and AMD GPUs encode
+on Linux, needs frames uploaded to the GPU first and is not wired yet, so those machines record with
+SVT-AV1.
+
+**Quality** is AV1's quantiser scale, from 0 (best) to 63 (smallest). It is SVT-AV1's `crf`, and each
+hardware encoder gets the same place on its own scale. `Settings.TEXT`, 30, keeps an interface's small
+text legible.
+
+**Colour.** Frames are converted with libswscale to 4:2:0 using the BT.709 matrix at **full** range, so no
+shade of the interface is squeezed into 16 to 235. The stream is tagged with BT.709 primaries and the
+sRGB transfer, and the decoder half reads that tagging back. Odd sizes, of the canvas or of a frame,
+are kept as they are.
+
+**Straight from the GPU.** `frame(MemorySegment, w, h, Pixels, pts)` takes native memory, such as a
+mapped readback buffer, and reads it in place. `Pixels.BGRA` is the order a swapchain and a DXGI back
+buffer hold, so a presented frame is encoded with no copy and no channel swap in Java. A `byte[]` frame
+is RGBA, as a `Frame` is, and is copied into a native buffer once.
+
+**A still window lasts until the end.** `repeat(pts)` encodes the last frame again at a later time,
+which costs almost nothing. A recording stopped while its window has drawn nothing for ten seconds
+calls it, so the file lasts until the stop instead of ending at the last change.
+
+**No frame rate on the stream.** The rate in `Settings` goes to the encoder only. Declared on the
+stream, Matroska would write it as every frame's default duration, and a variable-rate recording would
+contradict it on every frame. Tools that need a rate guess one. `ffmpeg -f null` then complains about
+timestamps that are fine, and `-c copy` or `-fps_mode vfr` does not.
+
+**It survives a crash.** Matroska keeps a cluster in memory until it closes, by default up to five
+seconds or 5 MB, and the file's own buffer holds more on top. A process killed mid-recording used to
+leave a file of 0 bytes. Now a cluster closes every second and every packet goes to the disk as it is
+written. A killed recording plays up to about its last second, and is missing only what a clean finish
+adds: the keyframe index and the stated duration, which players do without.
+`anUnfinishedRecordingPlaysUpToItsLastSecond` reads a file whose writer is still open to check this.
+
+SVT-AV1 prints its configuration to stderr when it opens. The shim sets `SVT_LOG=0` unless the host has
+set it, which keeps SVT-AV1 quiet the way FFmpeg's own log is kept quiet.
+
+`frame` encodes before it returns. A caller that must not wait, such as a render loop, hands frames to
+a thread that calls it. `vexelray-codec-video`'s `Recorder` is that thread.
+
 ## Licence: LGPL, shared
 
 The bundled FFmpeg is BtbN's **LGPL shared** build. It contains FFmpeg's own decoders plus the
 permissively licensed libraries BtbN links in (dav1d, libvpx, openh264, ...). Nothing GPL is in it, so
-there is no x264, x265 or libpostproc. Decoding needs none of those. FFmpeg stays a set of separate
+there is no x264, x265 or libpostproc. Decoding needs none of those, and recording uses SVT-AV1, which is
+BSD-licensed and linked into BtbN's `avcodec`, or the GPU vendor's own driver. FFmpeg stays a set of separate
 libraries beside the shim, which a user can replace, and that is what the LGPL asks for.
 `FFMPEG-LICENSE.txt` and `FFMPEG-SOURCE.txt` (which build, and where its source is) travel in the jar
 beside the libraries, under `natives/<platform>/`.
@@ -92,15 +177,17 @@ notice.
 ## Layout
 
 ```
-native/include/ffwrap.h      the contract: 27 functions, 2 opaque handles, no struct crosses
+native/include/ffwrap.h      the contract: 33 functions, 3 opaque handles, no struct crosses
 native/ffwrap/ffwrap.c       pictures: libavformat, libavcodec, libswscale
 native/ffwrap/audio.c        sound: libavformat, libavcodec, libswresample, miniaudio; its thread and clock
+native/ffwrap/encode.c       recording: libswscale to YUV, an AV1 encoder, libavformat to Matroska/WebM
 native/ffwrap/miniaudio.c    miniaudio's implementation (device layer only, see ma.h)
 native/build.sh              fetch the pinned FFmpeg and miniaudio, compile the shim, stage it with FFmpeg into native/dist/bin/<platform>/
 src/main/java/sibarum/ffmpeg/
-    Ffmpeg.java              open a file, or its sound; FFmpeg's version
+    Ffmpeg.java              open a file, or its sound, or record one; FFmpeg's version
     Video.java               an open file: info, output size, next frame, seek, close
     Audio.java               its sound: play, pause, seek, volume, clock, close
+    Recording.java           a file being recorded: frame, encoder, bytes, close
     VideoInfo.java, Frame.java, VideoException.java
     CApi.java                one line per header function
     NativeLib.java           find, extract, load: six libraries, in order
@@ -183,3 +270,8 @@ $FF -filter_complex "$SRC" -f lavfi -i "sine=f=440:d=3" -map "[v]" -map 0:a -c:v
 $FF -filter_complex "$SRC" -map "[v]" -c:v libvpx-vp9 -g 10 -b:v 100k rgb.webm
 $FF -filter_complex "$SRC" -map "[v]" -c:v libaom-av1 -g 10 -cpu-used 8 -b:v 100k rgb.mkv
 ```
+
+`RecordingTest` needs no fixture. It records solid colours with gaps between them, at odd sizes and
+through both encoders, and reads every file back through `Ffmpeg.open`, checking the codec, the size,
+each frame's time to the millisecond, and the colour. It also times 1080p and fails if a frame takes
+longer than 60 fps allows on the machine running the build.
