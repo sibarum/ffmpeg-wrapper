@@ -59,6 +59,23 @@
     </dependencyManagement>
 
     <build>
+        <plugins>
+            <!-- Platform-specific code only in -windows, -linux and -macos modules: vexelray-build's isolate goal fails
+                 the build on any outside them (vexelray-build/README.md). -->
+            <plugin>
+                <groupId>dev.vexelray.build</groupId>
+                <artifactId>vexelray-build-maven-plugin</artifactId>
+                <version>0.1.2-SNAPSHOT</version>
+                <executions>
+                    <execution>
+                        <id>isolate</id>
+                        <goals>
+                            <goal>isolate</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
         <pluginManagement>
             <plugins>
                 <plugin>
