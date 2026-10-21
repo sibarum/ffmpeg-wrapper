@@ -1,4 +1,5 @@
 target/
+target-linux/
 native/dist/
 native/build/
 native/ffmpeg/
