@@ -1,6 +1,8 @@
 package sibarum.ffmpeg;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -34,6 +36,37 @@ class AudioTest {
             assertEquals("aac", a.codec());
             assertEquals(1, a.channels());
             assertEquals(44_100, a.sampleRate());
+        }
+    }
+
+    /**
+     * A file that is only sound opens as a video's sound does, in every format people keep sound in. The MP3 carries
+     * a cover picture, which FFmpeg counts as a video stream: the sound must still be found, and the picture left.
+     */
+    @ParameterizedTest
+    @CsvSource({
+            "tone.wav,  pcm_s16le, 16000",
+            "tone.flac, flac,      48000",
+            "tone.mp3,  mp3,       48000",
+            "tone.ogg,  vorbis,    48000",
+            "tone.opus, opus,      48000",
+            "tone.m4a,  aac,       48000",
+    })
+    void opensAFileThatIsOnlySound(String name, String codec, int rate) throws Exception {
+        try (Audio a = Ffmpeg.openAudio(fixture(name), Audio.Output.NOWHERE)) {
+            assertEquals(codec, a.codec());
+            assertEquals(1, a.channels());
+            assertEquals(rate, a.sampleRate());
+
+            a.seek(2_700_000);
+            a.play();
+            long give_up = System.nanoTime() + 3_000_000_000L;
+            while (!a.ended() && System.nanoTime() < give_up) {
+                Thread.sleep(10);
+            }
+            assertTrue(a.ended(), "played to its end, clock " + a.clockMicros());
+            long end = a.clockMicros();
+            assertTrue(Math.abs(end - 3_000_000) < 100_000, "at the sound's end: " + end);
         }
     }
 

@@ -271,6 +271,24 @@ $FF -filter_complex "$SRC" -map "[v]" -c:v libvpx-vp9 -g 10 -b:v 100k rgb.webm
 $FF -filter_complex "$SRC" -map "[v]" -c:v libaom-av1 -g 10 -cpu-used 8 -b:v 100k rgb.mkv
 ```
 
+The `tone.*` fixtures are files that are only sound: three seconds of the same tone, mono, in each format
+people keep sound in. `AudioTest` opens and plays each one to its end. The MP3 carries a cover picture,
+which FFmpeg counts as a video stream. It is made in two passes because the MP3 muxer stops the sound
+where a one-frame picture ends:
+
+```bash
+T='sine=f=440:d=3:r=48000'
+$FF -f lavfi -i 'sine=f=440:d=3:r=16000' -c:a pcm_s16le tone.wav
+$FF -f lavfi -i "$T" -c:a flac tone.flac
+$FF -f lavfi -i "$T" -c:a libvorbis -q:a 0 tone.ogg
+$FF -f lavfi -i "$T" -c:a libopus -b:a 24k tone.opus
+$FF -f lavfi -i "$T" -c:a aac -b:a 32k tone.m4a
+$FF -f lavfi -i "$T" -c:a libmp3lame -b:a 32k bare.mp3
+$FF -f lavfi -i color=c=red:s=32x32 -frames:v 1 cover.jpg
+$FF -i bare.mp3 -i cover.jpg -map 0:a -map 1:v -c copy -disposition:v attached_pic -id3v2_version 3 \
+    -metadata title=Tone -metadata artist=Sine tone.mp3
+```
+
 `RecordingTest` needs no fixture. It records solid colours with gaps between them, at odd sizes and
 through both encoders, and reads every file back through `Ffmpeg.open`, checking the codec, the size,
 each frame's time to the millisecond, and the colour. It also times 1080p and fails if a frame takes
