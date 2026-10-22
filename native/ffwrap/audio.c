@@ -11,10 +11,10 @@
  * device holds and has not played yet, and moves smoothly between its callbacks. Silence written into a
  * gap in the stream is counted like sound, so the count stays the stream's time.
  *
- * Every sample goes through level.c on its way into the ring, which gives it a gain in dB, worked out with
- * the decoded sound after it in view; the device plays it at compression times that gain. The leveller holds
- * samples back from the ring until it has seen far enough ahead, but they keep their places in the stream,
- * so the clock is as it would be without it.
+ * Every sample goes through level.c on its way into the ring, which measures it with the decoded sound after
+ * it in view; the device turns those measures into a gain by the compression knob as it plays the sample. The
+ * leveller holds samples back from the ring until it has seen far enough ahead, but they keep their places in
+ * the stream, so the clock is as it would be without it.
  */
 #include "ffwrap.h"
 #include "internal.h"
@@ -73,9 +73,10 @@ struct FfwAudio {
 
     /* Guarded by lock. */
     float *ring;                    /* cap sample frames of CHANNELS floats, held of them from head on */
-    float *gains;                   /* each of those frames' gain from the leveller, in dB */
+    float *measures;                /* each of those frames' FFWI_LEVEL_MEASURES measures from the leveller */
     uint32_t cap, head, held;
-    float compression;              /* how far the gains are applied: 0, not at all, to 1 */
+    FfwLevelKnob knob;              /* the compression, as the settings it stands for */
+    FfwLevelHeld released;          /* the gains just played, which the next come back up from */
     float *heard;                   /* the last heard_cap sample frames given to the device, ending at heard_at */
     uint32_t heard_cap, heard_at, heard_held;
     int64_t base_us;                /* the stream time of the first sample after the last seek */
@@ -124,10 +125,13 @@ static void on_device(ma_device *device, void *output, const void *input, ma_uin
     ma_mutex_lock(&a->lock);
     if (a->held > 0) {
         uint32_t k = count < a->held ? count : a->held;
-        float c = a->compression;
         for (uint32_t i = 0; i < k; i++) {
             uint32_t at = (a->head + i) % a->cap;
-            float m = c > 0 ? powf(10.0f, c * a->gains[at] / 20.0f) : 1.0f;
+            float m = 1.0f;
+            if (a->knob.on) {
+                float db = ffwi_level_gain(&a->knob, a->measures + (size_t) at * FFWI_LEVEL_MEASURES, &a->released);
+                m = powf(10.0f, db / 20.0f);
+            }
             float *o = out + (size_t) i * CHANNELS;
             for (int ch = 0; ch < CHANNELS; ch++) {
                 o[ch] = a->ring[(size_t) at * CHANNELS + ch] * m;
@@ -150,9 +154,9 @@ static void on_device(ma_device *device, void *output, const void *input, ma_uin
 
 /* --- the decoder --------------------------------------------------------------------------------- */
 
-/* Write n sample frames and their gains to the ring, waiting for room. 0 if a seek or close came first,
+/* Write n sample frames and their measures to the ring, waiting for room. 0 if a seek or close came first,
  * and what was left is dropped. The leveller's sink. */
-static int put(void *to, const float *src, const float *gains, int64_t n) {
+static int put(void *to, const float *src, const float *measures, int64_t n) {
     FfwAudio *a = to;
     while (n > 0) {
         ma_mutex_lock(&a->lock);
@@ -174,10 +178,12 @@ static int put(void *to, const float *src, const float *gains, int64_t n) {
         size_t two = (size_t) (k - first) * CHANNELS * sizeof(float);
         memcpy(at, src, one);
         memcpy(a->ring, src + (size_t) first * CHANNELS, two);
-        memcpy(a->gains + tail, gains, (size_t) first * sizeof(float));
-        memcpy(a->gains, gains + first, (size_t) (k - first) * sizeof(float));
+        memcpy(a->measures + (size_t) tail * FFWI_LEVEL_MEASURES, measures,
+               (size_t) first * FFWI_LEVEL_MEASURES * sizeof(float));
+        memcpy(a->measures, measures + (size_t) first * FFWI_LEVEL_MEASURES,
+               (size_t) (k - first) * FFWI_LEVEL_MEASURES * sizeof(float));
         src += (size_t) k * CHANNELS;
-        gains += k;
+        measures += (size_t) k * FFWI_LEVEL_MEASURES;
         a->held += k;
         ma_mutex_unlock(&a->lock);
         n -= k;
@@ -402,7 +408,7 @@ void ffw_audio_close(FfwAudio *a) {
         ma_mutex_uninit(&a->lock);
     }
     av_free(a->ring);
-    av_free(a->gains);
+    av_free(a->measures);
     av_free(a->heard);
     ffwi_level_free(a->level);
     av_free(a->chunk);
@@ -443,11 +449,12 @@ static int open_output(FfwAudio *a, int32_t output) {
     a->latency_us = a->period_us * (a->device.playback.internalPeriods ? a->device.playback.internalPeriods : 1);
     a->cap = a->rate / 2;               /* half a second ahead: enough to ride out a slow decode */
     a->ring = av_malloc((size_t) a->cap * CHANNELS * sizeof(float));
-    a->gains = av_malloc((size_t) a->cap * sizeof(float));
+    a->measures = av_malloc((size_t) a->cap * FFWI_LEVEL_MEASURES * sizeof(float));
+    ffwi_level_knob(&a->knob, 0.0f, a->rate);
     a->heard_cap = a->rate / 4;         /* a quarter of a second of what was played, for a meter or a scope */
     a->heard = av_malloc((size_t) a->heard_cap * CHANNELS * sizeof(float));
     a->level = a->rate > 0 ? ffwi_level_new(a->rate) : NULL;
-    if (a->rate == 0 || a->ring == NULL || a->gains == NULL || a->heard == NULL || a->level == NULL) {
+    if (a->rate == 0 || a->ring == NULL || a->measures == NULL || a->heard == NULL || a->level == NULL) {
         ffwi_fail(a->rate == 0 ? "the sound output has no rate" : "out of memory");
         return 0;
     }
@@ -607,6 +614,7 @@ int32_t ffw_audio_seek(FfwAudio *a, int64_t us) {
     }
     ma_mutex_lock(&a->lock);
     a->seek_to = us;
+    memset(&a->released, 0, sizeof a->released);
     a->base_us = us;
     a->head = 0;
     a->held = 0;
@@ -624,7 +632,11 @@ void ffw_audio_volume(FfwAudio *a, float volume) {
 
 void ffw_audio_compression(FfwAudio *a, float amount) {
     ma_mutex_lock(&a->lock);
-    a->compression = amount > 0.0f ? amount < 1.0f ? amount : 1.0f : 0.0f;     /* NaN is none */
+    int was = a->knob.on;
+    ffwi_level_knob(&a->knob, amount, a->rate);
+    if (!was) {
+        memset(&a->released, 0, sizeof a->released);    /* turned on: nothing played with it to come up from */
+    }
     ma_mutex_unlock(&a->lock);
 }
 

@@ -116,11 +116,13 @@ FFW_API int32_t ffw_audio_seek(FfwAudio *a, int64_t us);
 /* Loudness, from 0 (silent) to 1 (as stored); clamped to that. */
 FFW_API void ffw_audio_volume(FfwAudio *a, float volume);
 
-/* Dynamic range compression, from 0 (as stored, the default) to 1; clamped to that. Loud passages are
- * lowered and quiet ones raised towards one loudness, and peaks limited to -6 dBFS, each sample's gain
- * worked out with the decoded sound after it in view, so the gain comes down before a loud passage or a
- * bang arrives. At 1 no sample is played above -6 dBFS; at less, none below it is raised past it. The
- * clock is unchanged by it, and a change takes effect at once. */
+/* Dynamic range compression on one knob, from 0 (as stored, the default) to 1; clamped to that. The knob
+ * moves every setting together: at 0.25 only the extremes are tamed, at 0.5 it is night mode (3:1, quiet
+ * raised up to 12 dB, peaks to -6 dBFS), and at 1 it is deliberately too much, everything pulled to one
+ * loudness and pumping, so the effect cannot be missed. Each sample is measured with the decoded sound after
+ * it in view, so the gain comes down before a loud passage or a bang arrives, not after. At any setting
+ * above 0 no sample is played above that setting's ceiling, which is never above 0 dBFS. The clock is
+ * unchanged by it, and a change takes effect at once. */
 FFW_API void ffw_audio_compression(FfwAudio *a, float amount);
 
 /* Copy the last `frames` stereo sample frames given to the output, oldest first, as float pairs, into dst

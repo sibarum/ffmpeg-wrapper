@@ -19,7 +19,7 @@ try (Audio sound = Ffmpeg.openAudio(path)) {
     sound.play();                      // out of the speakers, decoded on a thread of its own
     sound.clockMicros();               // the time being heard now: show the frame due then
     sound.seek(12_500_000);            // exact, playing or paused
-    sound.compression(1f);             // night mode: quiet raised, loud lowered, peaks held to -6 dBFS
+    sound.compression(0.5f);           // night mode: quiet raised, loud lowered, peaks held to -6 dBFS
 }
 
 try (Recording rec = Ffmpeg.record(Path.of("window.mkv"), 2560, 1440, Recording.Settings.DEFAULT)) {
@@ -85,39 +85,51 @@ card.
 
 ### Compression
 
-`compression(amount)`, from 0 (as stored, the default) to 1, is dynamic range compression, the way a
-TV's night mode does it: dialogue comes up, explosions come down. It is in `native/ffwrap/level.c`,
-which every sample passes through on its way into the ring, and it has two stages:
+`compression(amount)` is dynamic range compression on one knob, from 0 (as stored, the default) to 1:
+dialogue comes up, explosions come down. The knob is not a wet/dry mix. It moves every setting together:
 
-- **The leveller** measures loudness per 10 ms block (K-weighted, as ITU-R BS.1770 does). It takes the
-  median block over 0.31 s around each one, so a bang or a pause between words does not move it. It
-  pulls that towards −18 LUFS at 3:1, raising by at most 12 dB, and by less near silence so room tone
-  stays room tone.
-- **The guard** is a peak limiter at −6 dBFS, for a gunshot in a quiet scene that is over before the
-  leveller notices it.
+| | 0.25: the extremes | 0.5: night mode | 1: too much |
+| --- | --- | --- | --- |
+| Threshold | ±6 LU around −18 LUFS left alone | none: all pulled towards −18 | none |
+| Ratio | 1.5:1 | 3:1 | ∞:1, one loudness |
+| Quiet raised by at most | 0 dB | 12 dB | 30 dB, room tone and hiss too |
+| Peak ceiling | −3 dBFS | −6 dBFS | −12 dBFS |
+| Release | 10 dB/s | 20 dB/s | 80 dB/s, levelled by syllable: it pumps |
 
-Each stage works out its gain in a way that can only ever lower it. At full compression no sample is
-played above −6 dBFS. At less, nothing below that is raised past it.
+The top is too much on purpose. Turned all the way up, the effect cannot be missed, and that is how
+an ear learns to hear it lower down. Most normalizers are so timid that even fully on nobody can tell
+they are there. It still does no harm at any setting: above 0, no sample is played above that
+setting's ceiling, which is never above 0 dBFS, and overall loudness tops out at the target.
+
+**Measures, not gains.** `native/ffwrap/level.c` has two halves. The decoder's half gives every sample
+three measures on its way into the ring:
+
+- **Slow loudness:** the median of 10 ms K-weighted blocks (ITU-R BS.1770) over 0.31 s. A bang or a
+  pause between words does not move it.
+- **Quick loudness:** the same over 50 ms, for the top of the knob.
+- **Peak:** in dBFS.
+
+The device's half turns those into a gain by the knob as each sample is played, so turning it is heard
+at once, mid-drag, with nothing decoded again. The releases run there too, sample by sample. Every
+step that shapes a gain can only lower it, which is what keeps the ceiling a guarantee.
 
 **The lookahead is real, and nothing waits for it.** A compressor on a live signal can only see ahead by
 holding the signal back, and everything else, the picture included, has to wait with it. A file is not
-live, and the decoder is half a second ahead already. So the leveller holds the samples it is given on
-the decoder's side, until about 0.37 s of what follows has been decoded, and works out each sample's gain
-with that in view. The gain comes down *before* a loud passage or a bang, not after. Every sample keeps
-its place in the stream's time, and the clock counts samples played, so it is exactly what it is without
-compression. After a seek, the first sound waits for that 0.37 s to be decoded, which takes about a
-millisecond.
-
-The gain travels with each sample, in dB, and the device applies `amount` times it as it plays. Changing
-the amount, or turning it off, is heard at once rather than after half a second, and nothing is decoded
-again.
+live, and the decoder is half a second ahead already. So the decoder's half holds samples until about
+0.37 s of what follows has been decoded. Each measure is taken at the loudest point near its sample,
+which is the same as the least gain near it, so the gain comes down *before* a loud passage or a bang,
+not after. Every sample keeps its place in the stream's time, and the clock counts samples played, so
+it is exactly what it is without compression. After a seek, the first sound waits for that 0.37 s to be
+decoded, which takes about a millisecond.
 
 Measured by `CompressionTest`:
 
-- a tone at 0.01 then 0.7 is 36.9 dB apart as stored, and 21.3 dB apart at full compression;
-- a 20 ms bang in a quiet scene plays at exactly −6 dBFS, where it was −3.5 as stored, while the quiet
-  around it comes up 8.2 dB;
-- 0.4 s after a seek to 1.0 s, the clock reads 1.395 s.
+- A tone at 0.01 then 0.7 is 36.9 dB apart as stored. It is 35.2 dB apart at 0.25, 17.4 at 0.5, and 0.0
+  at 1.
+- A 20 ms bang at 0.95 in a quiet scene plays at −3, −6 and −12 dBFS at 0.25, 0.5 and 1.
+- The quiet around that bang comes up 0, 12 and 22.7 dB at the same settings.
+- Turning the knob from 0 to 1 mid-play is heard within 80 ms (+25.7 dB).
+- 0.4 s after a seek to 1.0 s, the clock reads 1.37–1.40 s.
 
 ## Recording
 
@@ -332,7 +344,8 @@ dynamics in them:
 
 ```bash
 $FF -f lavfi -i "aevalsrc='if(lt(t,1.5),0.01,0.7)*sin(2*PI*440*t)':s=48000:d=3" -c:a flac quiet-loud.flac
-$FF -f lavfi -i "aevalsrc='if(between(t,1.5,1.52),0.95,0.01)*sin(2*PI*440*t)':s=48000:d=3" -c:a flac bang.flac
+E='if(between(t,1.5,1.52),0.95,0.01)*sin(2*PI*440*t)'      # stereo, so the bang reaches the device at 0.95
+$FF -f lavfi -i "aevalsrc='$E|$E':s=48000:d=3" -c:a flac bang.flac
 ```
 
 `RecordingTest` needs no fixture. It records solid colours with gaps between them, at odd sizes and

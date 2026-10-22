@@ -13,9 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Compression, measured on what the device is given ({@link Audio#heard}), playing for real to
- * {@link Audio.Output#NOWHERE}. The fixtures are a 440 Hz tone, mono FLAC, three seconds:
- * {@code quiet-loud.flac} at 0.01 for 1.5 s and then 0.7, and {@code bang.flac} at 0.01 throughout but for 20 ms
- * at 0.95 from 1.5 s (README, "Tests").
+ * {@link Audio.Output#NOWHERE}. The fixtures are a 440 Hz tone, FLAC, three seconds: {@code quiet-loud.flac}, mono,
+ * at 0.01 for 1.5 s and then 0.7, and {@code bang.flac}, stereo so that its peak reaches the device as it is, at
+ * 0.01 throughout but for 20 ms at 0.95 from 1.5 s (README, "Tests").
  *
  * <p>Times are real, so each reading waits for the clock to reach a place well inside the passage it measures.
  */
@@ -24,12 +24,18 @@ class CompressionTest {
     /** About 50 ms at the null device's 48 kHz. */
     private static final int WINDOW = 2400;
 
+    /** The knob's whole way: each step brings loud and quiet nearer, and the top leaves almost nothing between. */
     @Test
-    void bringsLoudAndQuietTogether() throws Exception {
+    void theRangeNarrowsAllTheWayUp() throws Exception {
         double plain = range(0f);
-        double compressed = range(1f);
+        double light = range(0.25f);
+        double night = range(0.5f);
+        double full = range(1f);
         assertTrue(plain > 35, "as stored, 0.01 against 0.7 is 37 dB: " + plain);
-        assertTrue(compressed < plain - 15, "compressed, much nearer: " + compressed + " dB against " + plain);
+        // The loud passage is 11 LU over the target: 5 past light's band of 6, which it takes at 1.5:1.
+        assertTrue(light < plain - 1, "light, a little nearer: " + light);
+        assertTrue(night < light - 6, "night mode, much nearer: " + night);
+        assertTrue(full < 6, "all the way up, nearly one loudness: " + full);
     }
 
     /** The loud passage against the quiet one, in dB, as heard at compression c. */
@@ -49,17 +55,43 @@ class CompressionTest {
      * come down by the time the bang is played rather than after.
      */
     @Test
-    void raisesTheQuietAndLowersTheBangInIt() throws Exception {
+    void nightModeRaisesTheQuietAndLowersTheBangInIt() throws Exception {
         float[] plain = around(0f);
-        float[] compressed = around(1f);
-        double plainPeak = peak(plain);
-        double peak = peak(compressed);
-        assertTrue(plainPeak > 0.6, "the bang is in the window: " + plainPeak);
-        double ceiling = Math.pow(10, -6 / 20.0);
-        assertTrue(peak <= ceiling * 1.001, "the bang is limited to -6 dBFS: " + peak + " against " + plainPeak);
-
-        double raised = 20 * Math.log10(rms(compressed, 0, 1200) / rms(plain, 0, 1200));
+        float[] night = around(0.5f);
+        assertTrue(peak(plain) > 0.6, "the bang is in the window: " + peak(plain));
+        assertTrue(peak(night) <= dbfs(-6), "the bang is held to -6 dBFS: " + peak(night));
+        double raised = raised(plain, night);
         assertTrue(raised > 6, "the quiet before it is raised: " + raised + " dB");
+    }
+
+    /** Low on the knob only the extremes are touched: the bang comes down, the quiet scene stays as it was. */
+    @Test
+    void lightOnlyTamesTheBang() throws Exception {
+        float[] plain = around(0f);
+        float[] light = around(0.25f);
+        assertTrue(peak(plain) > dbfs(-1), "the bang as stored is near full scale: " + peak(plain));
+        assertTrue(peak(light) <= dbfs(-3), "the bang is held to -3 dBFS: " + peak(light));
+        double raised = raised(plain, light);
+        assertTrue(Math.abs(raised) < 1, "the quiet is left alone: " + raised + " dB");
+    }
+
+    /** All the way up is too much, and plainly so, but never harms: the bang is crushed to -12 dBFS. */
+    @Test
+    void fullIsTooMuchButHarmless() throws Exception {
+        float[] plain = around(0f);
+        float[] full = around(1f);
+        assertTrue(peak(full) <= dbfs(-12), "the bang is held to -12 dBFS: " + peak(full));
+        double raised = raised(plain, full);
+        assertTrue(raised > 15, "the quiet is raised a long way: " + raised + " dB");
+    }
+
+    /** How far the quiet at the start of a window {@link #around} is raised, in dB. */
+    private static double raised(float[] plain, float[] compressed) {
+        return 20 * Math.log10(rms(compressed, 0, 1200) / rms(plain, 0, 1200));
+    }
+
+    private static double dbfs(double db) {
+        return Math.pow(10, db / 20) * 1.001;
     }
 
     /** A quarter of a second heard, ending just after the bang, at compression c. */

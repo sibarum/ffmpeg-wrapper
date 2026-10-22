@@ -109,11 +109,14 @@ public final class Audio implements AutoCloseable {
     }
 
     /**
-     * Dynamic range compression, from 0 (as stored, the default) to 1; clamped to that. Loud passages are lowered
-     * and quiet ones raised towards one loudness, and peaks limited to -6 dBFS, the way a TV's night mode does.
-     * Each sample's gain is worked out with the decoded sound after it in view, so the gain comes down before a
-     * loud passage or a bang arrives, not after. At 1 no sample is played above -6 dBFS; at less, none below it
-     * is raised past it. The {@link #clockMicros clock} is unchanged by it, and a change is heard at once.
+     * Dynamic range compression on one knob, from 0 (as stored, the default) to 1; clamped to that. The knob moves
+     * every setting together (threshold, ratio, how far quiet passages are raised, the peak ceiling, the release):
+     * at 0.25 only the extremes are tamed, peaks held to -3 dBFS and nothing raised; at 0.5 it is night mode, 3:1,
+     * quiet raised up to 12 dB, peaks to -6 dBFS; at 1 it is too much on purpose, everything at one loudness and
+     * pumping, peaks to -12 dBFS, so that the effect cannot be missed. Each sample is measured with the decoded
+     * sound after it in view, so the gain comes down before a loud passage or a bang arrives, not after. At any
+     * setting above 0 no sample is played above that setting's ceiling. The {@link #clockMicros clock} is
+     * unchanged by it, and a change is heard at once.
      */
     public synchronized void compression(float amount) {
         MemorySegment h = open();
