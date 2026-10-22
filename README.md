@@ -1,7 +1,7 @@
 # ffmpeg-wrapper
 
 Panama (FFM) bindings for one C ABI over every video FFmpeg can decode, the sound that goes with it, and
-AV1 recorded in real time from frames as they are made. Hand-written downcalls over a thirty-three-function
+AV1 recorded in real time from frames as they are made. Hand-written downcalls over a thirty-five-function
 header and a small C shim behind it, with no jextract, no JNI and no code generation.
 
 ```java
@@ -19,6 +19,7 @@ try (Audio sound = Ffmpeg.openAudio(path)) {
     sound.play();                      // out of the speakers, decoded on a thread of its own
     sound.clockMicros();               // the time being heard now: show the frame due then
     sound.seek(12_500_000);            // exact, playing or paused
+    sound.compression(1f);             // night mode: quiet raised, loud lowered, peaks held to -6 dBFS
 }
 
 try (Recording rec = Ffmpeg.record(Path.of("window.mkv"), 2560, 1440, Recording.Settings.DEFAULT)) {
@@ -67,7 +68,8 @@ exact, frame-numbered seeking never waits on the sound or the other way round.
 ahead, resamples it with libswresample to float stereo at the output's own rate (5.1 is mixed down,
 mono goes to both sides), and hands it to [miniaudio](https://miniaud.io), which plays it out of the
 system's default output (WASAPI on Windows, PulseAudio or ALSA on Linux) and follows that output when it
-changes. Java only steers it, with play, pause, seek and volume, and reads its clock back. The audio
+changes. Java only steers it, with play, pause, seek, volume and compression, and reads its clock back,
+and a copy of the last quarter-second given to the device (`heard`) for a meter or a scope. The audio
 thread never calls into Java, so a garbage collection cannot make the sound stutter.
 
 **The clock is what a player keeps time by**: `clockMicros()` is the time of the sound being *heard*
@@ -80,6 +82,42 @@ time. Showing each frame when this clock reaches it keeps the picture with the s
 `Audio.Output.NOWHERE` plays to miniaudio's null device, which drains the sound in real time and drops
 it. The clock runs as it would with speakers, which is what the tests use on a machine with no sound
 card.
+
+### Compression
+
+`compression(amount)`, from 0 (as stored, the default) to 1, is dynamic range compression, the way a
+TV's night mode does it: dialogue comes up, explosions come down. It is in `native/ffwrap/level.c`,
+which every sample passes through on its way into the ring, and it has two stages:
+
+- **The leveller** measures loudness per 10 ms block (K-weighted, as ITU-R BS.1770 does). It takes the
+  median block over 0.31 s around each one, so a bang or a pause between words does not move it. It
+  pulls that towards −18 LUFS at 3:1, raising by at most 12 dB, and by less near silence so room tone
+  stays room tone.
+- **The guard** is a peak limiter at −6 dBFS, for a gunshot in a quiet scene that is over before the
+  leveller notices it.
+
+Each stage works out its gain in a way that can only ever lower it. At full compression no sample is
+played above −6 dBFS. At less, nothing below that is raised past it.
+
+**The lookahead is real, and nothing waits for it.** A compressor on a live signal can only see ahead by
+holding the signal back, and everything else, the picture included, has to wait with it. A file is not
+live, and the decoder is half a second ahead already. So the leveller holds the samples it is given on
+the decoder's side, until about 0.37 s of what follows has been decoded, and works out each sample's gain
+with that in view. The gain comes down *before* a loud passage or a bang, not after. Every sample keeps
+its place in the stream's time, and the clock counts samples played, so it is exactly what it is without
+compression. After a seek, the first sound waits for that 0.37 s to be decoded, which takes about a
+millisecond.
+
+The gain travels with each sample, in dB, and the device applies `amount` times it as it plays. Changing
+the amount, or turning it off, is heard at once rather than after half a second, and nothing is decoded
+again.
+
+Measured by `CompressionTest`:
+
+- a tone at 0.01 then 0.7 is 36.9 dB apart as stored, and 21.3 dB apart at full compression;
+- a 20 ms bang in a quiet scene plays at exactly −6 dBFS, where it was −3.5 as stored, while the quiet
+  around it comes up 8.2 dB;
+- 0.4 s after a seek to 1.0 s, the clock reads 1.395 s.
 
 ## Recording
 
@@ -287,6 +325,14 @@ $FF -f lavfi -i "$T" -c:a libmp3lame -b:a 32k bare.mp3
 $FF -f lavfi -i color=c=red:s=32x32 -frames:v 1 cover.jpg
 $FF -i bare.mp3 -i cover.jpg -map 0:a -map 1:v -c copy -disposition:v attached_pic -id3v2_version 3 \
     -metadata title=Tone -metadata artist=Sine tone.mp3
+```
+
+`CompressionTest` measures what the device was given (`Audio.heard`), with two fixtures that have
+dynamics in them:
+
+```bash
+$FF -f lavfi -i "aevalsrc='if(lt(t,1.5),0.01,0.7)*sin(2*PI*440*t)':s=48000:d=3" -c:a flac quiet-loud.flac
+$FF -f lavfi -i "aevalsrc='if(between(t,1.5,1.52),0.95,0.01)*sin(2*PI*440*t)':s=48000:d=3" -c:a flac bang.flac
 ```
 
 `RecordingTest` needs no fixture. It records solid colours with gaps between them, at odd sizes and

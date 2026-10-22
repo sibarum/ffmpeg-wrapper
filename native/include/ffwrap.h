@@ -4,13 +4,14 @@
  *
  * Hand-written, not generated: this header is the contract, and the C in ../ffwrap/ (ffwrap.c for
  * pictures, audio.c for sound, encode.c for recording) and the Java downcalls in
- * ../../src/main/java/sibarum/ffmpeg/CApi.java are all written against it. Thirty-three functions, no
+ * ../../src/main/java/sibarum/ffmpeg/CApi.java are all written against it. Thirty-five functions, no
  * structs crossing the boundary, three opaque handles. FFmpeg's own structs change layout between major versions; they stay on this side of the
  * line, so the Java never learns one.
  *
  * Pixels are always straight RGBA8, sRGB, tightly packed, top row first: what imagelib gives a picture,
- * so a video frame uploads the way a picture does. Sound never crosses at all: it goes from the decoder
- * to the speaker on this side, and only its clock comes back.
+ * so a video frame uploads the way a picture does. Sound never crosses on its way out: it goes from the
+ * decoder to the speaker on this side, and only its clock, and a copy of the last of it for a meter, come
+ * back.
  *
  * Failure is uniform: a function returning a pointer returns NULL, one returning a status returns 0 (or
  * -1 where 0 already means something), and ffw_last_error() then says why on this thread.
@@ -114,6 +115,18 @@ FFW_API int32_t ffw_audio_seek(FfwAudio *a, int64_t us);
 
 /* Loudness, from 0 (silent) to 1 (as stored); clamped to that. */
 FFW_API void ffw_audio_volume(FfwAudio *a, float volume);
+
+/* Dynamic range compression, from 0 (as stored, the default) to 1; clamped to that. Loud passages are
+ * lowered and quiet ones raised towards one loudness, and peaks limited to -6 dBFS, each sample's gain
+ * worked out with the decoded sound after it in view, so the gain comes down before a loud passage or a
+ * bang arrives. At 1 no sample is played above -6 dBFS; at less, none below it is raised past it. The
+ * clock is unchanged by it, and a change takes effect at once. */
+FFW_API void ffw_audio_compression(FfwAudio *a, float amount);
+
+/* Copy the last `frames` stereo sample frames given to the output, oldest first, as float pairs, into dst
+ * (2 * frames floats): what is being heard, compressed but before the volume. Up to a quarter of a second
+ * is kept. The number copied: fewer when less has been played since the open. */
+FFW_API uint32_t ffw_audio_heard(FfwAudio *a, float *dst, uint32_t frames);
 
 /* The time of the sound being heard now, in microseconds from the stream's start: smooth between the
  * device's periods, and allowing for what the device holds but has not played yet. */

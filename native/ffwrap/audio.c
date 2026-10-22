@@ -10,11 +10,18 @@
  * The clock counts what the device has taken since the last seek, at the output's rate, less what the
  * device holds and has not played yet, and moves smoothly between its callbacks. Silence written into a
  * gap in the stream is counted like sound, so the count stays the stream's time.
+ *
+ * Every sample goes through level.c on its way into the ring, which gives it a gain in dB, worked out with
+ * the decoded sound after it in view; the device plays it at compression times that gain. The leveller holds
+ * samples back from the ring until it has seen far enough ahead, but they keep their places in the stream,
+ * so the clock is as it would be without it.
  */
 #include "ffwrap.h"
 #include "internal.h"
+#include "level.h"
 #include "ma.h"
 
+#include <math.h>
 #include <string.h>
 
 #include <libavcodec/avcodec.h>
@@ -51,6 +58,7 @@ struct FfwAudio {
     int chunk_cap;                  /* in sample frames */
     int64_t start;                  /* the stream's first timestamp, in its time base */
     int drained;                    /* the demuxer is spent and the decoder has been told so */
+    FfwLevel *level;                /* every sample's gain, from what is around it */
 
     ma_context context;
     ma_device device;
@@ -65,7 +73,11 @@ struct FfwAudio {
 
     /* Guarded by lock. */
     float *ring;                    /* cap sample frames of CHANNELS floats, held of them from head on */
+    float *gains;                   /* each of those frames' gain from the leveller, in dB */
     uint32_t cap, head, held;
+    float compression;              /* how far the gains are applied: 0, not at all, to 1 */
+    float *heard;                   /* the last heard_cap sample frames given to the device, ending at heard_at */
+    uint32_t heard_cap, heard_at, heard_held;
     int64_t base_us;                /* the stream time of the first sample after the last seek */
     uint64_t played;                /* sample frames the device has taken since then */
     int64_t tick_us;                /* when it last took some, on av_gettime_relative's clock */
@@ -112,9 +124,18 @@ static void on_device(ma_device *device, void *output, const void *input, ma_uin
     ma_mutex_lock(&a->lock);
     if (a->held > 0) {
         uint32_t k = count < a->held ? count : a->held;
-        uint32_t first = k < a->cap - a->head ? k : a->cap - a->head;
-        memcpy(out, a->ring + (size_t) a->head * CHANNELS, (size_t) first * CHANNELS * sizeof(float));
-        memcpy(out + (size_t) first * CHANNELS, a->ring, (size_t) (k - first) * CHANNELS * sizeof(float));
+        float c = a->compression;
+        for (uint32_t i = 0; i < k; i++) {
+            uint32_t at = (a->head + i) % a->cap;
+            float m = c > 0 ? powf(10.0f, c * a->gains[at] / 20.0f) : 1.0f;
+            float *o = out + (size_t) i * CHANNELS;
+            for (int ch = 0; ch < CHANNELS; ch++) {
+                o[ch] = a->ring[(size_t) at * CHANNELS + ch] * m;
+            }
+            memcpy(a->heard + (size_t) a->heard_at * CHANNELS, o, CHANNELS * sizeof(float));
+            a->heard_at = (a->heard_at + 1) % a->heard_cap;
+        }
+        a->heard_held = a->heard_held + k < a->heard_cap ? a->heard_held + k : a->heard_cap;
         a->head = (a->head + k) % a->cap;
         a->held -= k;
         a->played += k;
@@ -129,9 +150,10 @@ static void on_device(ma_device *device, void *output, const void *input, ma_uin
 
 /* --- the decoder --------------------------------------------------------------------------------- */
 
-/* Write n sample frames (silence, for NULL) to the ring, waiting for room. 0 if a seek or close came
- * first, and what was left is dropped. */
-static int put(FfwAudio *a, const float *src, int64_t n) {
+/* Write n sample frames and their gains to the ring, waiting for room. 0 if a seek or close came first,
+ * and what was left is dropped. The leveller's sink. */
+static int put(void *to, const float *src, const float *gains, int64_t n) {
+    FfwAudio *a = to;
     while (n > 0) {
         ma_mutex_lock(&a->lock);
         if (a->closing || a->seek_to >= 0) {
@@ -150,14 +172,12 @@ static int put(FfwAudio *a, const float *src, int64_t n) {
         float *at = a->ring + (size_t) tail * CHANNELS;
         size_t one = (size_t) first * CHANNELS * sizeof(float);
         size_t two = (size_t) (k - first) * CHANNELS * sizeof(float);
-        if (src != NULL) {
-            memcpy(at, src, one);
-            memcpy(a->ring, src + (size_t) first * CHANNELS, two);
-            src += (size_t) k * CHANNELS;
-        } else {
-            memset(at, 0, one);
-            memset(a->ring, 0, two);
-        }
+        memcpy(at, src, one);
+        memcpy(a->ring, src + (size_t) first * CHANNELS, two);
+        memcpy(a->gains + tail, gains, (size_t) first * sizeof(float));
+        memcpy(a->gains, gains + first, (size_t) (k - first) * sizeof(float));
+        src += (size_t) k * CHANNELS;
+        gains += k;
         a->held += k;
         ma_mutex_unlock(&a->lock);
         n -= k;
@@ -268,7 +288,7 @@ static int place(FfwAudio *a, int64_t base_us, int64_t *pos) {
     int64_t off = at - *pos;
     const float *src = a->chunk;
     if (off > slack) {
-        if (!put(a, NULL, off)) {
+        if (!ffwi_level_push(a->level, NULL, off, put, a)) {
             return 0;
         }
         *pos += off;
@@ -279,7 +299,7 @@ static int place(FfwAudio *a, int64_t base_us, int64_t *pos) {
         src += (size_t) -off * CHANNELS;
         n -= (int) -off;
     }
-    if (!put(a, src, n)) {
+    if (!ffwi_level_push(a->level, src, n, put, a)) {
         return 0;
     }
     *pos += n;
@@ -319,6 +339,7 @@ static void run(FfwAudio *a) {
 
         if (target >= 0) {
             relocate(a, target);
+            ffwi_level_reset(a->level);
             base_us = target;
             pos = 0;
             continue;
@@ -329,9 +350,11 @@ static void run(FfwAudio *a) {
             av_frame_unref(a->frame);
             continue;
         }
-        /* The end, or a file that cannot be read on: either way there is no more sound until a seek. */
+        /* The end, or a file that cannot be read on: either way there is no more sound until a seek. What
+         * the leveller holds goes to the ring first, looking ahead only as far as there is. */
+        int all = ffwi_level_finish(a->level, put, a);
         ma_mutex_lock(&a->lock);
-        if (a->seek_to < 0) {
+        if (all && a->seek_to < 0) {
             a->finished = 1;
         }
         ma_mutex_unlock(&a->lock);
@@ -379,6 +402,9 @@ void ffw_audio_close(FfwAudio *a) {
         ma_mutex_uninit(&a->lock);
     }
     av_free(a->ring);
+    av_free(a->gains);
+    av_free(a->heard);
+    ffwi_level_free(a->level);
     av_free(a->chunk);
     swr_free(&a->convert);
     av_channel_layout_uninit(&a->in_layout);
@@ -417,7 +443,11 @@ static int open_output(FfwAudio *a, int32_t output) {
     a->latency_us = a->period_us * (a->device.playback.internalPeriods ? a->device.playback.internalPeriods : 1);
     a->cap = a->rate / 2;               /* half a second ahead: enough to ride out a slow decode */
     a->ring = av_malloc((size_t) a->cap * CHANNELS * sizeof(float));
-    if (a->rate == 0 || a->ring == NULL) {
+    a->gains = av_malloc((size_t) a->cap * sizeof(float));
+    a->heard_cap = a->rate / 4;         /* a quarter of a second of what was played, for a meter or a scope */
+    a->heard = av_malloc((size_t) a->heard_cap * CHANNELS * sizeof(float));
+    a->level = a->rate > 0 ? ffwi_level_new(a->rate) : NULL;
+    if (a->rate == 0 || a->ring == NULL || a->gains == NULL || a->heard == NULL || a->level == NULL) {
         ffwi_fail(a->rate == 0 ? "the sound output has no rate" : "out of memory");
         return 0;
     }
@@ -590,6 +620,23 @@ int32_t ffw_audio_seek(FfwAudio *a, int64_t us) {
 
 void ffw_audio_volume(FfwAudio *a, float volume) {
     ma_device_set_master_volume(&a->device, volume < 0.0f ? 0.0f : volume > 1.0f ? 1.0f : volume);
+}
+
+void ffw_audio_compression(FfwAudio *a, float amount) {
+    ma_mutex_lock(&a->lock);
+    a->compression = amount > 0.0f ? amount < 1.0f ? amount : 1.0f : 0.0f;     /* NaN is none */
+    ma_mutex_unlock(&a->lock);
+}
+
+uint32_t ffw_audio_heard(FfwAudio *a, float *dst, uint32_t frames) {
+    ma_mutex_lock(&a->lock);
+    uint32_t k = frames < a->heard_held ? frames : a->heard_held;
+    uint32_t from = (a->heard_at + a->heard_cap - k) % a->heard_cap;
+    uint32_t first = k < a->heard_cap - from ? k : a->heard_cap - from;
+    memcpy(dst, a->heard + (size_t) from * CHANNELS, (size_t) first * CHANNELS * sizeof(float));
+    memcpy(dst + (size_t) first * CHANNELS, a->heard, (size_t) (k - first) * CHANNELS * sizeof(float));
+    ma_mutex_unlock(&a->lock);
+    return k;
 }
 
 int64_t ffw_audio_clock_us(FfwAudio *a) {

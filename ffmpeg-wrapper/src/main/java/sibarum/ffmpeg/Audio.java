@@ -1,7 +1,10 @@
 package sibarum.ffmpeg;
 
+import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
+
+import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
 
 /**
  * A file's sound, playing out of a speaker. Made by {@link Ffmpeg#openAudio}, paused at the start; closed with
@@ -15,8 +18,9 @@ import java.nio.file.Path;
  * }
  * }</pre>
  *
- * <p><b>The sound never comes into Java.</b> It is decoded on a thread of its own, a little ahead, and handed
- * straight to the output device on the native side; this class only steers that and reads the clock back. A
+ * <p><b>The sound never comes into Java to be played.</b> It is decoded on a thread of its own, a little ahead,
+ * and handed straight to the output device on the native side; this class only steers that and reads the clock
+ * back, and a copy of what was just {@link #heard heard} for a meter. A
  * {@link Video} on the same file is a separate handle with its own decoder, so the two seek independently.
  *
  * <p><b>The clock is what a player keeps time by.</b> It is the time of the sound being heard now, allowing for
@@ -102,6 +106,38 @@ public final class Audio implements AutoCloseable {
             CApi.ffw_audio_volume.invokeExact(h, volume);
             return null;
         }, "ffw_audio_volume");
+    }
+
+    /**
+     * Dynamic range compression, from 0 (as stored, the default) to 1; clamped to that. Loud passages are lowered
+     * and quiet ones raised towards one loudness, and peaks limited to -6 dBFS, the way a TV's night mode does.
+     * Each sample's gain is worked out with the decoded sound after it in view, so the gain comes down before a
+     * loud passage or a bang arrives, not after. At 1 no sample is played above -6 dBFS; at less, none below it
+     * is raised past it. The {@link #clockMicros clock} is unchanged by it, and a change is heard at once.
+     */
+    public synchronized void compression(float amount) {
+        MemorySegment h = open();
+        call(() -> {
+            CApi.ffw_audio_compression.invokeExact(h, amount);
+            return null;
+        }, "ffw_audio_compression");
+    }
+
+    /**
+     * Copy the sound last given to the output into {@code stereo}, oldest first, left and right in turn: what is
+     * being heard, compressed but before the {@link #volume}, for a meter or a scope. Up to a quarter of a second
+     * is kept. Returns the sample frames copied, at most {@code stereo.length / 2}; fewer when less has been
+     * played since the open.
+     */
+    public synchronized int heard(float[] stereo) {
+        MemorySegment h = open();
+        int frames = stereo.length / 2;
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment dst = arena.allocate(JAVA_FLOAT, Math.max(1, frames * 2L));
+            int got = call(() -> (int) CApi.ffw_audio_heard.invokeExact(h, dst, frames), "ffw_audio_heard");
+            MemorySegment.copy(dst, JAVA_FLOAT, 0, stereo, 0, got * 2);
+            return got;
+        }
     }
 
     /** The time of the sound being heard now, in µs from the stream's start. */
