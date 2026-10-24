@@ -1,8 +1,15 @@
 # ffmpeg-wrapper
 
-Panama (FFM) bindings for one C ABI over every video FFmpeg can decode, the sound that goes with it, and
-AV1 recorded in real time from frames as they are made. Hand-written downcalls over a thirty-five-function
-header and a small C shim behind it, with no jextract, no JNI and no code generation.
+Panama (FFM) bindings for one C ABI over every video FFmpeg can decode and the sound that goes with it, and,
+apart, AV1 recorded in real time from frames as they are made. Hand-written downcalls over small C shims, with
+no jextract, no JNI and no code generation.
+
+Two halves, each over an FFmpeg of its own, so an application carries only the half it uses:
+
+| Artifact | What it holds | Windows natives |
+| --- | --- | --- |
+| `ffmpeg-wrapper` | `Ffmpeg.open`, `Video`, `Audio`: every decoder, over BtbN's prebuilt LGPL FFmpeg and the `ffwrap` shim (29 functions) | 125 MB |
+| `ffmpeg-wrapper-record` | `Recording`: the AV1 encoders (SVT-AV1, NVENC, Quick Sync, AMF) and the Matroska and WebM muxers, over an FFmpeg built from source with nothing else and the `ffrecord` shim (8 functions) | 14 MB |
 
 ```java
 try (Video video = Ffmpeg.open(path)) {
@@ -22,7 +29,8 @@ try (Audio sound = Ffmpeg.openAudio(path)) {
     sound.compression(0.5f);           // night mode: quiet raised, loud lowered, peaks held to -6 dBFS
 }
 
-try (Recording rec = Ffmpeg.record(Path.of("window.mkv"), 2560, 1440, Recording.Settings.DEFAULT)) {
+// ffmpeg-wrapper-record, sibarum.ffmpeg.record
+try (Recording rec = Recording.create(Path.of("window.mkv"), 2560, 1440, Recording.Settings.DEFAULT)) {
     rec.frame(rgba, w, h, presentedMicros);  // RGBA8 in, any size on a 2560x1440 canvas; AV1 out
 }                                            // the file is whole once this returns
 ```
@@ -133,10 +141,18 @@ Measured by `CompressionTest`:
 
 ## Recording
 
-`Ffmpeg.record` goes the other way. It takes RGBA8 frames as they are made and writes **AV1** into
-Matroska or WebM, whichever the file's name says (`.mkv`, `.webm`). It is meant for recording a window
-while it runs. The encoder and the muxer were already in the pinned build, so recording added no library,
-only `native/ffwrap/encode.c` and six functions in the header.
+`ffmpeg-wrapper-record`'s `Recording.create` goes the other way. It takes RGBA8 frames as they are made and
+writes **AV1** into Matroska or WebM, whichever the file's name says (`.mkv`, `.webm`). It is meant for
+recording a window while it runs.
+
+**Only an encoder.** An application that records its windows should not carry every decoder there is, so
+recording is apart down to its FFmpeg. `native/record.sh` pins FFmpeg's release source and SVT-AV1's, and each
+`ffmpeg-wrapper-record-<os>/native/build.sh` builds them: FFmpeg configured with `--disable-everything`, then
+the four AV1 encoders, the Matroska and WebM muxers and the file protocol put back, with SVT-AV1 linked into
+`avcodec` statically. On Windows that is 14 MB of DLLs against the decoding build's 125. The libraries carry a
+`-rec` suffix (`avcodec-rec-62.dll`, `libavcodec-rec.so.62`) and the shim's functions are `ffr_`, not `ffw_`, so
+an application that plays and records (Pix) loads both builds in one process and each shim binds to its own.
+`RecordingTest` does exactly that, playing every recording back through the decoding half.
 
 **Every frame brings its own time.** Matroska stamps each frame to the millisecond, so frames need not
 come at a steady rate. A window that draws nothing while idle is recorded as it was: the pause lasts as
@@ -145,7 +161,7 @@ millisecond is dropped (`frame` returns false), because the file could not tell 
 rate in `Settings` is a hint for rate control and the keyframe interval (one every five seconds), not
 a schedule.
 
-**A canvas, so a window can be resized while it is recorded.** The size given to `record` is a canvas,
+**A canvas, so a window can be resized while it is recorded.** The size given to `create` is a canvas,
 and every frame in the file is that size. Each frame handed in carries its own size. A smaller one goes
 at the canvas's top left, unscaled, and the rest of the canvas is black. A larger one is cut to the
 canvas. The canvas is meant to be the largest a frame will be, such as the screen's size.
@@ -209,17 +225,21 @@ SVT-AV1 prints its configuration to stderr when it opens. The shim sets `SVT_LOG
 set it, which keeps SVT-AV1 quiet the way FFmpeg's own log is kept quiet.
 
 `frame` encodes before it returns. A caller that must not wait, such as a render loop, hands frames to
-a thread that calls it. `vexelray-codec-video`'s `Recorder` is that thread.
+a thread that calls it. `vexelray-codec-record`'s `Recorder` is that thread.
 
 ## Licence: LGPL, shared
 
-The bundled FFmpeg is BtbN's **LGPL shared** build. It contains FFmpeg's own decoders plus the
+The decoding half's FFmpeg is BtbN's **LGPL shared** build. It contains FFmpeg's own decoders plus the
 permissively licensed libraries BtbN links in (dav1d, libvpx, openh264, ...). Nothing GPL is in it, so
-there is no x264, x265 or libpostproc. Decoding needs none of those, and recording uses SVT-AV1, which is
-BSD-licensed and linked into BtbN's `avcodec`, or the GPU vendor's own driver. FFmpeg stays a set of separate
+there is no x264, x265 or libpostproc, and decoding needs none of those. FFmpeg stays a set of separate
 libraries beside the shim, which a user can replace, and that is what the LGPL asks for.
 `FFMPEG-LICENSE.txt` and `FFMPEG-SOURCE.txt` (which build, and where its source is) travel in the jar
 beside the libraries, under `natives/<platform>/`.
+
+The recording half's FFmpeg is the same licence, shared, built from the pinned release source with nothing GPL
+enabled. Its encoders are SVT-AV1, which is BSD-licensed and linked into its `avcodec`, and the GPU vendors' own
+drivers, opened at run time. `FFMPEG-LICENSE.txt`, `FFMPEG-SOURCE.txt` and SVT-AV1's licence and patent grant
+travel beside its libraries, under `natives/record/<platform>/`.
 
 miniaudio is compiled into the shim. Its author offers it as public domain or MIT-0, so it asks for no
 notice.
@@ -227,31 +247,48 @@ notice.
 ## Layout
 
 ```
-native/include/ffwrap.h      the contract: 33 functions, 3 opaque handles, no struct crosses
+native/include/ffwrap.h      the decoding contract: 29 functions, 2 opaque handles, no struct crosses
 native/ffwrap/ffwrap.c       pictures: libavformat, libavcodec, libswscale
 native/ffwrap/audio.c        sound: libavformat, libavcodec, libswresample, miniaudio; its thread and clock
-native/ffwrap/encode.c       recording: libswscale to YUV, an AV1 encoder, libavformat to Matroska/WebM
 native/ffwrap/miniaudio.c    miniaudio's implementation (device layer only, see ma.h)
-native/build.sh              fetch the pinned FFmpeg and miniaudio, compile the shim, stage it with FFmpeg into native/dist/bin/<platform>/
-src/main/java/sibarum/ffmpeg/
-    Ffmpeg.java              open a file, or its sound, or record one; FFmpeg's version
+native/common.sh             the decoding build's pins: BtbN's FFmpeg, miniaudio
+native/record/ffrecord.h     the recording contract: 8 functions, 1 opaque handle
+native/record/record.c       recording: libswscale to YUV, an AV1 encoder, libavformat to Matroska/WebM
+native/record.sh             the recording build's pins (FFmpeg and SVT-AV1 source) and FFmpeg's configuration
+ffmpeg-wrapper-api/          FfmpegNatives, FfmpegRecordNatives (where an OS module's build is) and NativeLibraries
+                             (find, extract, load, in libs.txt's order), shared by both halves
+ffmpeg-wrapper/src/main/java/sibarum/ffmpeg/
+    Ffmpeg.java              open a file, or its sound; FFmpeg's version
     Video.java               an open file: info, output size, next frame, seek, close
     Audio.java               its sound: play, pause, seek, volume, clock, close
-    Recording.java           a file being recorded: frame, encoder, bytes, close
     VideoInfo.java, Frame.java, VideoException.java
     CApi.java                one line per header function
-    NativeLib.java           find, extract, load: six libraries, in order
+    NativeLib.java           the decoding build, through NativeLibraries
+ffmpeg-wrapper-<os>/native/build.sh          fetch BtbN's FFmpeg and miniaudio, compile ffwrap, stage natives/<platform>/
+ffmpeg-wrapper-record/src/main/java/sibarum/ffmpeg/record/
+    Recording.java           a file being recorded: create, frame, repeat, encoder, bytes, close
+    RecordingException.java
+    RecordApi.java           one line per header function, and the load
+ffmpeg-wrapper-record-<os>/native/build.sh   build SVT-AV1 and FFmpeg from source, compile ffrecord, stage natives/record/<platform>/
 ```
 
-`CApi` and `NativeLib` are package-private on purpose: the ABI is an implementation detail of the public
-types, not a second API.
+`CApi`, `NativeLib` and `RecordApi` are package-private on purpose: the ABI is an implementation detail of
+the public types, not a second API.
 
 ## Building
 
 ```bash
-./native/build.sh    # fetches FFmpeg and miniaudio, stages native/dist/bin/<platform>/
-mvn install          # bundles it into the jar; tests need --enable-native-access (surefire is set up)
+./ffmpeg-wrapper-windows/native/build.sh          # decoding: fetches FFmpeg and miniaudio, stages native/dist/<platform>/
+./ffmpeg-wrapper-record-windows/native/build.sh   # recording: builds SVT-AV1 and FFmpeg from source (a few minutes)
+mvn install          # bundles them into the jars; tests need --enable-native-access (surefire is set up)
 ```
+
+The recording build on Windows runs itself under MSYS2's UCRT64 MinGW-w64 (at `C:\msys64`), with
+`pacman -S make diffutils mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,pkgconf,nasm,ffnvcodec-headers,amf-headers,libvpl}`.
+libgcc, libstdc++ (libvpl's dispatcher) and winpthread are linked in statically, and the script fails if any DLL
+it stages needs anything but Windows' own. On Linux it needs `cc`, `make`, `cmake`, `ninja`, `nasm` and
+`pkg-config`, plus nv-codec-headers and AMF's headers for those encoders. **The Linux recording build is written,
+not yet run.**
 
 `build.sh` pins one BtbN autobuild (`RELEASE` and `BUILD` at its top, a month's last build, which BtbN
 keeps) and checks the download against its sha256. A bump changes those three lines together. miniaudio
@@ -268,7 +305,8 @@ The native side needs a C compiler and nothing else:
 
 The Windows staging is about 125 MB of DLLs, most of it `avcodec`. The jar compresses it to about
 55 MB. If that ever matters, a custom FFmpeg configured with `--disable-everything` plus the decoders and
-demuxers wanted is a fraction of the size, and changes nothing above `build.sh`.
+demuxers wanted is a fraction of the size, and changes nothing above `build.sh`: the recording half is built
+that way (`native/record.sh`) and stages 14 MB.
 
 At runtime the libraries are extracted from the jar to a temp dir and loaded in the order `libs.txt`
 gives (each after the ones it links, so a library loaded by path finds its dependencies already there).
@@ -283,6 +321,9 @@ libraries as resources, which would put 125 MB into the executable. The applicat
 `natives/<platform>/` out of the jar into an `ffmpeg` folder beside its executable (Pix does it with
 `maven-dependency-plugin` and ships the folder as an installer archive). Without it, `Ffmpeg.open` throws
 the `LinkageError` of the failed load, so a caller can tell a missing decoder from a bad file.
+
+The recording half is the same, from `-Dffmpeg.record.dir` or an `ffmpeg-record` folder beside the executable,
+copied out of `ffmpeg-wrapper-record-<os>`'s `natives/record/<platform>/`.
 
 ## Behaviour worth knowing
 
@@ -348,7 +389,8 @@ E='if(between(t,1.5,1.52),0.95,0.01)*sin(2*PI*440*t)'      # stereo, so the bang
 $FF -f lavfi -i "aevalsrc='$E|$E':s=48000:d=3" -c:a flac bang.flac
 ```
 
-`RecordingTest` needs no fixture. It records solid colours with gaps between them, at odd sizes and
-through both encoders, and reads every file back through `Ffmpeg.open`, checking the codec, the size,
+`RecordingTest`, in `ffmpeg-wrapper-record`, needs no fixture. It records solid colours with gaps between
+them, at odd sizes and through both encoders, and reads every file back through `Ffmpeg.open` (the decoding half,
+a test dependency only, in the same process), checking the codec, the size,
 each frame's time to the millisecond, and the colour. It also times 1080p and fails if a frame takes
 longer than 60 fps allows on the machine running the build.

@@ -14,7 +14,9 @@
         Video through FFmpeg, as modules: ffmpeg-wrapper (the Java API, holding no platform knowledge), and one
         ffmpeg-wrapper-&lt;os&gt; module per operating system with that OS's build of the ffwrap shim and the
         FFmpeg libraries under it. The shim's C source is shared, in native/; each OS module builds it with its own
-        native/build.sh.
+        native/build.sh. Recording is the same again, apart: ffmpeg-wrapper-record and one
+        ffmpeg-wrapper-record-&lt;os&gt; module per OS, with the ffrecord shim over an FFmpeg holding only the AV1
+        encoders.
     </description>
 
     <modules>
@@ -25,6 +27,11 @@
         <module>ffmpeg-wrapper-linux</module>
         <!-- The library vexelray-codec depends on, under the artifactId it already names. -->
         <module>ffmpeg-wrapper</module>
+        <!-- Recording, apart down to its own FFmpeg (the AV1 encoders only, built from source by each OS module's
+             native/build.sh), so an application that only records carries no decoder. -->
+        <module>ffmpeg-wrapper-record-windows</module>
+        <module>ffmpeg-wrapper-record-linux</module>
+        <module>ffmpeg-wrapper-record</module>
     </modules>
 
     <properties>
@@ -48,6 +55,21 @@
             <dependency>
                 <groupId>sibarum.ffmpeg</groupId>
                 <artifactId>ffmpeg-wrapper-linux</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>sibarum.ffmpeg</groupId>
+                <artifactId>ffmpeg-wrapper</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>sibarum.ffmpeg</groupId>
+                <artifactId>ffmpeg-wrapper-record-windows</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>sibarum.ffmpeg</groupId>
+                <artifactId>ffmpeg-wrapper-record-linux</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

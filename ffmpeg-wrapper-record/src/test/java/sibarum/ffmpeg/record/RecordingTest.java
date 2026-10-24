@@ -1,9 +1,12 @@
-package sibarum.ffmpeg;
+package sibarum.ffmpeg.record;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import sibarum.ffmpeg.Ffmpeg;
+import sibarum.ffmpeg.Frame;
+import sibarum.ffmpeg.Video;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -20,8 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Records for real, through the bundled FFmpeg's AV1 encoders, and reads every file back through {@link Ffmpeg#open}:
- * a recording is only right if the decoder half of this library plays it as it was made.
+ * Records for real, through the encoding-only FFmpeg's AV1 encoders, and reads every file back through
+ * {@link Ffmpeg#open}: a recording is only right if the decoding half plays it as it was made. Both builds are loaded
+ * in this one process, as in an application that plays and records, so this also shows that neither binds to the
+ * other's libraries. The decoding half is a test dependency only.
  */
 class RecordingTest {
 
@@ -34,7 +39,7 @@ class RecordingTest {
         Path file = dir.resolve(name);
         // Ten frames of red, a pause of two seconds with nothing drawn, ten of green: times as a window gives them.
         List<Long> times = new ArrayList<>();
-        try (Recording rec = Ffmpeg.record(file, 96, 64, new Recording.Settings(10, Recording.Settings.TEXT,
+        try (Recording rec = Recording.create(file, 96, 64, new Recording.Settings(10, Recording.Settings.TEXT,
                 Recording.Encoder.SOFTWARE))) {
             assertEquals("libsvtav1", rec.encoder());
             for (int i = 0; i < 20; i++) {
@@ -65,7 +70,7 @@ class RecordingTest {
     @Test
     void anOddSizeIsKept() {
         Path file = dir.resolve("odd.mkv");
-        try (Recording rec = Ffmpeg.record(file, 65, 49, Recording.Settings.DEFAULT)) {
+        try (Recording rec = Recording.create(file, 65, 49, Recording.Settings.DEFAULT)) {
             for (int i = 0; i < 3; i++) {
                 rec.frame(solid(65, 49, 0x0000ff), i * 16_667L);
             }
@@ -79,7 +84,7 @@ class RecordingTest {
 
     @Test
     void aFrameInTheLastOnesMillisecondIsDropped() {
-        try (Recording rec = Ffmpeg.record(dir.resolve("drop.mkv"), 64, 64, Recording.Settings.DEFAULT)) {
+        try (Recording rec = Recording.create(dir.resolve("drop.mkv"), 64, 64, Recording.Settings.DEFAULT)) {
             byte[] grey = solid(64, 64, 0x808080);
             assertTrue(rec.frame(grey, 5_000));
             assertFalse(rec.frame(grey, 5_400), "the same millisecond");
@@ -93,7 +98,7 @@ class RecordingTest {
     @Test
     void takesNativeMemoryAsItIs() {
         Path file = dir.resolve("native.mkv");
-        try (Arena arena = Arena.ofConfined(); Recording rec = Ffmpeg.record(file, 64, 64, Recording.Settings.DEFAULT)) {
+        try (Arena arena = Arena.ofConfined(); Recording rec = Recording.create(file, 64, 64, Recording.Settings.DEFAULT)) {
             MemorySegment pixels = arena.allocate(64 * 64 * 4);
             pixels.copyFrom(MemorySegment.ofArray(solid(64, 64, 0xff00ff)));
             assertTrue(rec.frame(pixels, 64, 64, Recording.Pixels.RGBA, 0));
@@ -107,7 +112,7 @@ class RecordingTest {
     @Test
     void takesBgraAsAPresenterHoldsIt() {
         Path file = dir.resolve("bgra.mkv");
-        try (Arena arena = Arena.ofConfined(); Recording rec = Ffmpeg.record(file, 64, 64, Recording.Settings.DEFAULT)) {
+        try (Arena arena = Arena.ofConfined(); Recording rec = Recording.create(file, 64, 64, Recording.Settings.DEFAULT)) {
             // Orange (ff8000) stored B, G, R, A: the bytes of solid()'s 0x0080ff.
             MemorySegment pixels = arena.allocate(64 * 64 * 4);
             pixels.copyFrom(MemorySegment.ofArray(solid(64, 64, 0x0080ff)));
@@ -125,7 +130,7 @@ class RecordingTest {
     @Test
     void anUnfinishedRecordingPlaysUpToItsLastSecond() {
         Path file = dir.resolve("killed.mkv");
-        try (Recording rec = Ffmpeg.record(file, 64, 64, Recording.Settings.DEFAULT)) {
+        try (Recording rec = Recording.create(file, 64, 64, Recording.Settings.DEFAULT)) {
             for (int i = 0; i < 40; i++) {     // four seconds at 10 fps
                 rec.frame(solid(64, 64, i < 20 ? 0xff0000 : 0x0000ff), i * 100_000L);
             }
@@ -146,7 +151,7 @@ class RecordingTest {
     @Test
     void theLastFrameIsHeldUntilTheEnd() {
         Path file = dir.resolve("held.mkv");
-        try (Recording rec = Ffmpeg.record(file, 64, 64, Recording.Settings.DEFAULT)) {
+        try (Recording rec = Recording.create(file, 64, 64, Recording.Settings.DEFAULT)) {
             assertFalse(rec.repeat(1_000_000), "nothing to hold before a frame");
             rec.frame(solid(64, 64, 0xff0000), 0);
             rec.frame(solid(64, 64, 0x00ff00), 100_000);
@@ -166,7 +171,7 @@ class RecordingTest {
     @Test
     void hardwareFallsBackToSoftwareAndPlaysEitherWay() {
         Path file = dir.resolve("hw.mkv");
-        try (Recording rec = Ffmpeg.record(file, 128, 128,
+        try (Recording rec = Recording.create(file, 128, 128,
                 Recording.Settings.DEFAULT.withEncoder(Recording.Encoder.HARDWARE))) {
             assertFalse(rec.encoder().isBlank());
             for (int i = 0; i < 10; i++) {
@@ -193,7 +198,7 @@ class RecordingTest {
         for (int i = 0; i < frames.length; i++) {
             frames[i] = interfaceLike(w, h, i);
         }
-        try (Recording rec = Ffmpeg.record(dir.resolve("hd.mkv"), w, h,
+        try (Recording rec = Recording.create(dir.resolve("hd.mkv"), w, h,
                 Recording.Settings.DEFAULT.withEncoder(Recording.Encoder.valueOf(encoder)))) {
             rec.frame(frames[0], 0);    // the encoder's start is not a frame's cost
             long start = System.nanoTime();
@@ -208,13 +213,13 @@ class RecordingTest {
 
     @Test
     void refusesWhatItCannotRecord() {
-        assertThrows(VideoException.class, () -> Ffmpeg.record(dir.resolve("x.gif"), 64, 64, Recording.Settings.DEFAULT));
-        assertThrows(VideoException.class, () -> Ffmpeg.record(dir.resolve("x.mkv"), 0, 64, Recording.Settings.DEFAULT));
+        assertThrows(RecordingException.class, () -> Recording.create(dir.resolve("x.gif"), 64, 64, Recording.Settings.DEFAULT));
+        assertThrows(RecordingException.class, () -> Recording.create(dir.resolve("x.mkv"), 0, 64, Recording.Settings.DEFAULT));
         assertThrows(IllegalArgumentException.class, () -> new Recording.Settings(60, 64, Recording.Encoder.SOFTWARE));
-        try (Recording rec = Ffmpeg.record(dir.resolve("size.mkv"), 64, 64, Recording.Settings.DEFAULT)) {
-            assertThrows(VideoException.class, () -> rec.frame(new byte[10], 0));
-            assertThrows(VideoException.class, () -> rec.frame(new byte[16], 2, 3, 0));
-            assertThrows(VideoException.class, () -> rec.frame(new byte[0], 0, 0, 0));
+        try (Recording rec = Recording.create(dir.resolve("size.mkv"), 64, 64, Recording.Settings.DEFAULT)) {
+            assertThrows(RecordingException.class, () -> rec.frame(new byte[10], 0));
+            assertThrows(RecordingException.class, () -> rec.frame(new byte[16], 2, 3, 0));
+            assertThrows(RecordingException.class, () -> rec.frame(new byte[0], 0, 0, 0));
         }
     }
 
@@ -223,10 +228,10 @@ class RecordingTest {
     @ValueSource(strings = {"SOFTWARE", "HARDWARE"})   // planar 4:2:0 and, on a GPU, NV12: each blackened its own way
     void framesOfAnySizeGoOnTheCanvasUnscaled(String encoder) {
         Path file = dir.resolve("resized.mkv");
-        try (Recording rec = Ffmpeg.record(file, 128, 96,
+        try (Recording rec = Recording.create(file, 128, 96,
                 Recording.Settings.DEFAULT.withEncoder(Recording.Encoder.valueOf(encoder)))) {
             assertTrue(rec.frame(solid(128, 96, 0xff0000), 128, 96, 0));
-            assertTrue(rec.frame(new Frame(65, 49, 100_000, solid(65, 49, 0x00ff00))));   // smaller, and odd
+            assertTrue(rec.frame(solid(65, 49, 0x00ff00), 65, 49, 100_000));                // smaller, and odd
             assertTrue(rec.frame(solid(160, 120, 0x0000ff), 160, 120, 200_000));            // larger than the canvas
             assertTrue(rec.frame(solid(128, 96, 0xff0000), 300_000));                       // the canvas's own size
         }
@@ -251,11 +256,11 @@ class RecordingTest {
 
     @Test
     void closingTwiceDoesNothingAndAClosedRecordingRefuses() {
-        Recording rec = Ffmpeg.record(dir.resolve("closed.mkv"), 64, 64, Recording.Settings.DEFAULT);
+        Recording rec = Recording.create(dir.resolve("closed.mkv"), 64, 64, Recording.Settings.DEFAULT);
         rec.close();
         rec.close();
         assertTrue(rec.closed());
-        assertThrows(VideoException.class, () -> rec.frame(solid(64, 64, 0), 0));
+        assertThrows(RecordingException.class, () -> rec.frame(solid(64, 64, 0), 0));
     }
 
     static byte[] solid(int w, int h, int rgb) {

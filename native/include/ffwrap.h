@@ -1,11 +1,11 @@
 /*
- * ffwrap — one C ABI over every video FFmpeg can decode, the sound that goes with it, and AV1 recorded
- * from frames as they are made.
+ * ffwrap — one C ABI over every video FFmpeg can decode, and the sound that goes with it. Recording is
+ * ../record/ffrecord.h's, over an FFmpeg of its own.
  *
  * Hand-written, not generated: this header is the contract, and the C in ../ffwrap/ (ffwrap.c for
- * pictures, audio.c for sound, encode.c for recording) and the Java downcalls in
- * ../../src/main/java/sibarum/ffmpeg/CApi.java are all written against it. Thirty-five functions, no
- * structs crossing the boundary, three opaque handles. FFmpeg's own structs change layout between major versions; they stay on this side of the
+ * pictures, audio.c for sound) and the Java downcalls in
+ * ../../src/main/java/sibarum/ffmpeg/CApi.java are all written against it. Twenty-nine functions, no
+ * structs crossing the boundary, two opaque handles. FFmpeg's own structs change layout between major versions; they stay on this side of the
  * line, so the Java never learns one.
  *
  * Pixels are always straight RGBA8, sRGB, tightly packed, top row first: what imagelib gives a picture,
@@ -16,7 +16,7 @@
  * Failure is uniform: a function returning a pointer returns NULL, one returning a status returns 0 (or
  * -1 where 0 already means something), and ffw_last_error() then says why on this thread.
  *
- * An FfwVideo and an FfwWriter are used from one thread at a time; an FfwAudio from any. Different handles on different
+ * An FfwVideo is used from one thread at a time; an FfwAudio from any. Different handles on different
  * threads do not interact.
  */
 #ifndef FFWRAP_H
@@ -139,54 +139,6 @@ FFW_API int32_t ffw_audio_ended(FfwAudio *a);
 
 /* Stop the output, end the decoding thread and free everything. NULL does nothing. */
 FFW_API void ffw_audio_close(FfwAudio *a);
-
-/* --- recording -----------------------------------------------------------------------------------------
- *
- * Frames in, as they are made, and AV1 out: a window recorded while it runs. Each frame carries its own
- * time, which the container keeps, so frames need not come at a steady rate and a pause is recorded as
- * long as it was. Pixels in are what ffw_pixels gives out: straight RGBA8, sRGB, tightly packed, top row
- * first. They are stored as BT.709 4:2:0 at full range, and tagged so. */
-typedef struct FfwWriter FfwWriter;
-
-/* Which AV1 encoder records. */
-#define FFW_ENCODE_SOFTWARE 0   /* SVT-AV1 in its real-time mode: on every machine, the same file on each */
-#define FFW_ENCODE_HARDWARE 1   /* the GPU's (NVENC, Quick Sync, AMF), whichever opens first; else SVT-AV1 */
-
-/* Create the file at a UTF-8 path, its container told by its name (.mkv or .webm), on a canvas of
- * width x height: every frame in the file is that size, whatever size each frame handed in is (a window
- * being resized), so it is the largest a frame will be, such as the screen's. Frames come about `fps` a
- * second (a hint for rate control, not a schedule). `quality` is AV1's
- * quantiser scale, 0 (best) to 63 (smallest). NULL if no encoder opens or the file cannot be created.
- * Finish it with ffw_writer_close. */
-FFW_API FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, double fps,
-                                   int32_t quality, int32_t encoder);
-
-/* The encoder that opened ("libsvtav1", "av1_nvenc"), owned by w. */
-FFW_API const char *ffw_writer_encoder(const FfwWriter *w);
-
-/* The byte order of the pixels handed to ffw_writer_frame. */
-#define FFW_PIXELS_RGBA 0       /* what ffw_pixels gives out, and what imagelib gives a picture */
-#define FFW_PIXELS_BGRA 1       /* what a swapchain and a DXGI back buffer hold: a presented frame as read back */
-
-/* Encode width * height * 4 bytes of pixels in `order`, shown at `pts_us` from the recording's start,
- * and write what the encoder gives back. The frame goes at the canvas's top left, unscaled; the rest of
- * the canvas is black, and what falls outside it is cut off. 1; 0 if it was dropped for coming no later
- * than the last frame's millisecond (the container's resolution); -1 on failure. The pixels are not
- * kept. */
-FFW_API int32_t ffw_writer_frame(FfwWriter *w, const uint8_t *pixels, uint32_t width, uint32_t height,
-                                 int32_t order, int64_t pts_us);
-
-/* Encode the last frame again, shown at `pts_us`: a picture that stayed on the screen, so the file lasts
- * until then rather than ending where the last change was. 1; 0 if there is no frame yet, or `pts_us` is
- * no later than the last frame's millisecond; -1 on failure. */
-FFW_API int32_t ffw_writer_repeat(FfwWriter *w, int64_t pts_us);
-
-/* Bytes written to the file so far. */
-FFW_API int64_t ffw_writer_bytes(const FfwWriter *w);
-
-/* Encode what the encoder still holds, finish the file and free everything. 1 if the file is whole, else
- * 0, with w freed all the same. NULL does nothing and returns 1. */
-FFW_API int32_t ffw_writer_close(FfwWriter *w);
 
 /* Why the last call on this thread failed, or NULL. Valid until the next failing call on it. */
 FFW_API const char *ffw_last_error(void);

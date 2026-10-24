@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>sibarum.ffmpeg</groupId>
+        <artifactId>ffmpeg-wrapper-parent</artifactId>
+        <version>0.1.2-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>ffmpeg-wrapper-record</artifactId>
+
+    <name>ffmpeg-wrapper-record</name>
+    <description>
+        AV1 recorded from frames as they are made, into Matroska or WebM, through SVT-AV1 or a GPU's encoder (NVENC,
+        Quick Sync, AMF), and nothing else: Panama (FFM) bindings over an eight-function header
+        (native/record/ffrecord.h) and a small C shim over an FFmpeg built with the encoders and none of the
+        decoders. Apart from ffmpeg-wrapper, down to its own FFmpeg, so an application that records its windows
+        carries no video player. Holds no platform knowledge: the shim and its FFmpeg come from the
+        ffmpeg-wrapper-record-&lt;os&gt; module the profiles below add.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>sibarum.ffmpeg</groupId>
+            <artifactId>ffmpeg-wrapper-api</artifactId>
+        </dependency>
+        <!-- The tests play every recording back through the decoding half. Never at run time. -->
+        <dependency>
+            <groupId>sibarum.ffmpeg</groupId>
+            <artifactId>ffmpeg-wrapper</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <!-- Exactly one OS module, picked by the build host's OS, so every application on this library gets its
+         platform's encoding FFmpeg without naming it. -->
+    <profiles>
+        <profile>
+            <id>platform-windows</id>
+            <activation><os><family>windows</family></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>sibarum.ffmpeg</groupId>
+                    <artifactId>ffmpeg-wrapper-record-windows</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+        <profile>
+            <id>platform-linux</id>
+            <activation><os><family>unix</family><name>linux</name></os></activation>
+            <dependencies>
+                <dependency>
+                    <groupId>sibarum.ffmpeg</groupId>
+                    <artifactId>ffmpeg-wrapper-record-linux</artifactId>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+</project>

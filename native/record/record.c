@@ -1,16 +1,16 @@
 /*
- * encode — the recording half of ../include/ffwrap.h: RGBA8 frames in, AV1 out, in whatever container the file's
- * name asks for (Matroska or WebM, which time every frame on its own). libswscale to YUV, libavcodec to encode,
- * libavformat to write.
+ * record — the C behind ffrecord.h: RGBA8 frames in, AV1 out, in whatever container the file's name asks for
+ * (Matroska or WebM, which time every frame on its own). libswscale to YUV, libavcodec to encode, libavformat to
+ * write. Built against the encoding-only FFmpeg (../record.sh), never the decoding one.
  *
  * Real time first. The software encoder is SVT-AV1 in its real-time mode (no look-ahead, no reordering), which
  * keeps up with a 1080p window at 60 fps on well under a core of a laptop CPU; a GPU's AV1 encoder is tried first
  * only when asked for, and the software one follows it whenever none opens. Every one is LGPL-clean: SVT-AV1 is
  * BSD, the hardware ones are the vendors' drivers.
  */
-#include "ffwrap.h"
-#include "internal.h"
+#include "ffrecord.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,7 +22,64 @@
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 
-struct FfwWriter {
+#if defined(_MSC_VER)
+#define FFR_TLS __declspec(thread)
+#else
+#define FFR_TLS _Thread_local
+#endif
+
+static FFR_TLS char err_text[512];
+static FFR_TLS int err_set;
+
+/* Say why the call in hand failed, for ffr_last_error on this thread. */
+static void fail(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(err_text, sizeof err_text, fmt, args);
+    va_end(args);
+    err_set = 1;
+}
+
+/* FFmpeg's log, kept rather than printed: a library writing to the host's stderr is a library talking over its
+ * caller. The last error an encoder or muxer logged on this thread is often the better reason, so fail_av adds it. */
+static FFR_TLS char log_text[256];
+
+static void keep_log(void *avcl, int level, const char *fmt, va_list args) {
+    (void) avcl;
+    if (level > AV_LOG_ERROR) {
+        return;
+    }
+    vsnprintf(log_text, sizeof log_text, fmt, args);
+    size_t n = strlen(log_text);
+    while (n > 0 && (log_text[n - 1] == '\n' || log_text[n - 1] == '\r')) {
+        log_text[--n] = '\0';
+    }
+}
+
+static void listen_to_ffmpeg(void) {
+    av_log_set_callback(keep_log);
+    log_text[0] = '\0';
+}
+
+/* What went wrong, in FFmpeg's words, after what this was doing. */
+static void fail_av(const char *doing, int code) {
+    char why[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(code, why, sizeof why);
+    if (log_text[0] != '\0') {
+        fail("%s: %s (%s)", doing, why, log_text);
+    } else {
+        fail("%s: %s", doing, why);
+    }
+}
+
+const char *ffr_version(void) {
+    return av_version_info();
+}
+
+const char *ffr_last_error(void) {
+    return err_set ? err_text : NULL;
+}
+struct FfrWriter {
     AVFormatContext *format;
     AVStream *stream;
     AVCodecContext *codec;
@@ -38,7 +95,7 @@ struct FfwWriter {
 };
 
 /* SVT-AV1 prints its configuration to stderr when it opens, unless told otherwise; FFmpeg's own log is kept
- * (ffwi_listen), and SVT's is quietened to its fatal errors the same way. Only where the host has not set it. */
+ * (listen_to_ffmpeg), and SVT's is quietened to its fatal errors the same way. Only where the host has not set it. */
 static void quieten_svt(void) {
 #ifdef _WIN32
     size_t set = 0;
@@ -97,20 +154,20 @@ static void tune(AVCodecContext *c, const char *name, int quality) {
 }
 
 /* Open the encoder called `name` for w, or leave w->codec NULL and say why. */
-static int open_encoder(FfwWriter *w, const char *name, double fps, int quality) {
+static int open_encoder(FfrWriter *w, const char *name, double fps, int quality) {
     const AVCodec *codec = avcodec_find_encoder_by_name(name);
     if (codec == NULL) {
-        ffwi_fail("no %s encoder in this FFmpeg", name);
+        fail("no %s encoder in this FFmpeg", name);
         return 0;
     }
     enum AVPixelFormat format = pixel_format(codec);
     if (format == AV_PIX_FMT_NONE) {
-        ffwi_fail("%s takes neither yuv420p nor nv12", name);
+        fail("%s takes neither yuv420p nor nv12", name);
         return 0;
     }
     AVCodecContext *c = avcodec_alloc_context3(codec);
     if (c == NULL) {
-        ffwi_fail("out of memory for the encoder");
+        fail("out of memory for the encoder");
         return 0;
     }
     c->width = (int) w->width;
@@ -133,7 +190,7 @@ static int open_encoder(FfwWriter *w, const char *name, double fps, int quality)
     tune(c, name, quality);
     int code = avcodec_open2(c, codec, NULL);
     if (code < 0) {
-        ffwi_fail_av(name, code);
+        fail_av(name, code);
         avcodec_free_context(&c);
         return 0;
     }
@@ -143,7 +200,7 @@ static int open_encoder(FfwWriter *w, const char *name, double fps, int quality)
 
 /* The conversion to YUV for frames of width x height in `from` (RGBA or BGRA), made when either changes. It writes into
  * the top left of the canvas, at the frame's own size: nothing is scaled. 1, or 0 and why. */
-static int converter(FfwWriter *w, uint32_t width, uint32_t height, enum AVPixelFormat from) {
+static int converter(FfrWriter *w, uint32_t width, uint32_t height, enum AVPixelFormat from) {
     if (w->scale != NULL && width == w->scale_w && height == w->scale_h && from == w->scale_from) {
         return 1;
     }
@@ -152,7 +209,7 @@ static int converter(FfwWriter *w, uint32_t width, uint32_t height, enum AVPixel
                               w->codec->pix_fmt, SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INP,
                               NULL, NULL, NULL);
     if (w->scale == NULL) {
-        ffwi_fail("no conversion from %s to %s at %ux%u", av_get_pix_fmt_name(from),
+        fail("no conversion from %s to %s at %ux%u", av_get_pix_fmt_name(from),
                   av_get_pix_fmt_name(w->codec->pix_fmt), width, height);
         return 0;
     }
@@ -164,7 +221,7 @@ static int converter(FfwWriter *w, uint32_t width, uint32_t height, enum AVPixel
     return 1;
 }
 
-static void writer_free(FfwWriter *w) {
+static void writer_free(FfrWriter *w) {
     sws_freeContext(w->scale);
     av_frame_free(&w->frame);
     av_packet_free(&w->packet);
@@ -176,29 +233,29 @@ static void writer_free(FfwWriter *w) {
     av_free(w);
 }
 
-FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, double fps, int32_t quality,
+FfrWriter *ffr_open(const char *path, uint32_t width, uint32_t height, double fps, int32_t quality,
                            int32_t encoder) {
     if (path == NULL || path[0] == '\0') {
-        ffwi_fail("no path to write");
+        fail("no path to write");
         return NULL;
     }
     if (width == 0 || height == 0 || width > 16384 || height > 16384) {
-        ffwi_fail("a %ux%u recording was asked for", width, height);
+        fail("a %ux%u recording was asked for", width, height);
         return NULL;
     }
     if (!(fps > 0 && fps <= 1000)) {
-        ffwi_fail("a rate of %g frames a second was asked for", fps);
+        fail("a rate of %g frames a second was asked for", fps);
         return NULL;
     }
     if (quality < 0 || quality > 63) {
-        ffwi_fail("a quality of %d was asked for, where 0 to 63 is the scale", quality);
+        fail("a quality of %d was asked for, where 0 to 63 is the scale", quality);
         return NULL;
     }
-    ffwi_listen();
+    listen_to_ffmpeg();
     quieten_svt();
-    FfwWriter *w = av_mallocz(sizeof *w);
+    FfrWriter *w = av_mallocz(sizeof *w);
     if (w == NULL) {
-        ffwi_fail("out of memory");
+        fail("out of memory");
         return NULL;
     }
     w->width = width;
@@ -206,12 +263,12 @@ FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, do
     w->last_ms = -1;
     int code = avformat_alloc_output_context2(&w->format, NULL, NULL, path);
     if (code < 0 || w->format == NULL) {
-        ffwi_fail("no container for %s: name it .mkv or .webm", path);
+        fail("no container for %s: name it .mkv or .webm", path);
         writer_free(w);
         return NULL;
     }
     if (avformat_query_codec(w->format->oformat, AV_CODEC_ID_AV1, FF_COMPLIANCE_NORMAL) != 1) {
-        ffwi_fail("%s cannot hold AV1: name it .mkv or .webm", w->format->oformat->name);
+        fail("%s cannot hold AV1: name it .mkv or .webm", w->format->oformat->name);
         writer_free(w);
         return NULL;
     }
@@ -220,19 +277,19 @@ FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, do
      * AV1, refuses at open), then SVT-AV1, which always can. */
     static const char *const hardware[] = {"av1_nvenc", "av1_qsv", "av1_amf"};
     char tried[256] = "";
-    if (encoder == FFW_ENCODE_HARDWARE) {
+    if (encoder == FFR_ENCODE_HARDWARE) {
         for (size_t i = 0; i < sizeof hardware / sizeof *hardware && w->codec == NULL; i++) {
             if (!open_encoder(w, hardware[i], fps, quality)) {
                 size_t n = strlen(tried);
-                snprintf(tried + n, sizeof tried - n, "%s; ", ffw_last_error());
+                snprintf(tried + n, sizeof tried - n, "%s; ", ffr_last_error());
             }
         }
     }
     if (w->codec == NULL && !open_encoder(w, "libsvtav1", fps, quality)) {
         if (tried[0] != '\0') {
             char last[512];
-            snprintf(last, sizeof last, "%s", ffw_last_error());
-            ffwi_fail("no AV1 encoder opened: %s%s", tried, last);
+            snprintf(last, sizeof last, "%s", ffr_last_error());
+            fail("no AV1 encoder opened: %s%s", tried, last);
         }
         writer_free(w);
         return NULL;
@@ -242,7 +299,7 @@ FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, do
     w->frame = av_frame_alloc();
     w->packet = av_packet_alloc();
     if (w->stream == NULL || w->frame == NULL || w->packet == NULL) {
-        ffwi_fail("out of memory");
+        fail("out of memory");
         writer_free(w);
         return NULL;
     }
@@ -252,7 +309,7 @@ FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, do
     w->stream->time_base = w->codec->time_base;
     code = avcodec_parameters_from_context(w->stream->codecpar, w->codec);
     if (code < 0) {
-        ffwi_fail_av("could not describe the stream", code);
+        fail_av("could not describe the stream", code);
         writer_free(w);
         return NULL;
     }
@@ -265,7 +322,7 @@ FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, do
     w->frame->color_trc = w->codec->color_trc;
     code = av_frame_get_buffer(w->frame, 0);
     if (code < 0) {
-        ffwi_fail_av("out of memory for a frame", code);
+        fail_av("out of memory for a frame", code);
         writer_free(w);
         return NULL;
     }
@@ -276,7 +333,7 @@ FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, do
 
     code = avio_open(&w->format->pb, path, AVIO_FLAG_WRITE);
     if (code < 0) {
-        ffwi_fail_av("could not create the file", code);
+        fail_av("could not create the file", code);
         writer_free(w);
         return NULL;
     }
@@ -290,7 +347,7 @@ FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, do
     code = avformat_write_header(w->format, &options);
     av_dict_free(&options);
     if (code < 0) {
-        ffwi_fail_av("could not write the file's header", code);
+        fail_av("could not write the file's header", code);
         writer_free(w);
         return NULL;
     }
@@ -299,15 +356,15 @@ FfwWriter *ffw_writer_open(const char *path, uint32_t width, uint32_t height, do
     return w;
 }
 
-const char *ffw_writer_encoder(const FfwWriter *w) {
+const char *ffr_encoder(const FfrWriter *w) {
     return w->codec->codec->name;
 }
 
 /* Hand the encoder `frame` (NULL to finish) and write every packet it gives back. 1, or 0 on failure. */
-static int encode(FfwWriter *w, AVFrame *frame) {
+static int encode(FfrWriter *w, AVFrame *frame) {
     int code = avcodec_send_frame(w->codec, frame);
     if (code < 0 && !(frame == NULL && code == AVERROR_EOF)) {
-        ffwi_fail_av("could not encode a frame", code);
+        fail_av("could not encode a frame", code);
         return 0;
     }
     for (;;) {
@@ -316,14 +373,14 @@ static int encode(FfwWriter *w, AVFrame *frame) {
             return 1;
         }
         if (code < 0) {
-            ffwi_fail_av("could not encode a frame", code);
+            fail_av("could not encode a frame", code);
             return 0;
         }
         av_packet_rescale_ts(w->packet, w->codec->time_base, w->stream->time_base);
         w->packet->stream_index = w->stream->index;
         code = av_interleaved_write_frame(w->format, w->packet);
         if (code < 0) {
-            ffwi_fail_av("could not write to the file", code);
+            fail_av("could not write to the file", code);
             return 0;
         }
     }
@@ -339,13 +396,13 @@ static void blacken(AVFrame *f) {
     }
 }
 
-int32_t ffw_writer_frame(FfwWriter *w, const uint8_t *pixels, uint32_t width, uint32_t height, int32_t order,
+int32_t ffr_frame(FfrWriter *w, const uint8_t *pixels, uint32_t width, uint32_t height, int32_t order,
                          int64_t pts_us) {
     if (pixels == NULL || width == 0 || height == 0) {
-        ffwi_fail("no pixels");
+        fail("no pixels");
         return -1;
     }
-    enum AVPixelFormat from = order == FFW_PIXELS_BGRA ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA;
+    enum AVPixelFormat from = order == FFR_PIXELS_BGRA ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA;
     int64_t ms = pts_us / 1000;
     if (pts_us < 0 || ms <= w->last_ms) {
         return 0;   /* before the last frame, or in its millisecond: Matroska could not tell them apart */
@@ -359,7 +416,7 @@ int32_t ffw_writer_frame(FfwWriter *w, const uint8_t *pixels, uint32_t width, ui
     /* The encoder may still hold the last frame's buffers; this gives a fresh one if so. */
     int code = av_frame_make_writable(w->frame);
     if (code < 0) {
-        ffwi_fail_av("out of memory for a frame", code);
+        fail_av("out of memory for a frame", code);
         return -1;
     }
     if (shown_w < w->width || shown_h < w->height) {
@@ -368,7 +425,7 @@ int32_t ffw_writer_frame(FfwWriter *w, const uint8_t *pixels, uint32_t width, ui
     const uint8_t *src[4] = {pixels, NULL, NULL, NULL};
     int stride[4] = {(int) width * 4, 0, 0, 0};
     if (sws_scale(w->scale, src, stride, 0, (int) shown_h, w->frame->data, w->frame->linesize) <= 0) {
-        ffwi_fail("could not convert a frame from %s", av_get_pix_fmt_name(from));
+        fail("could not convert a frame from %s", av_get_pix_fmt_name(from));
         return -1;
     }
     w->frame->pts = ms;
@@ -380,7 +437,7 @@ int32_t ffw_writer_frame(FfwWriter *w, const uint8_t *pixels, uint32_t width, ui
     return 1;
 }
 
-int32_t ffw_writer_repeat(FfwWriter *w, int64_t pts_us) {
+int32_t ffr_repeat(FfrWriter *w, int64_t pts_us) {
     int64_t ms = pts_us / 1000;
     if (w->frames == 0 || pts_us < 0 || ms <= w->last_ms) {
         return 0;
@@ -396,12 +453,12 @@ int32_t ffw_writer_repeat(FfwWriter *w, int64_t pts_us) {
     return 1;
 }
 
-int64_t ffw_writer_bytes(const FfwWriter *w) {
+int64_t ffr_bytes(const FfrWriter *w) {
     int64_t n = avio_tell(w->format->pb);
     return n < 0 ? 0 : n;
 }
 
-int32_t ffw_writer_close(FfwWriter *w) {
+int32_t ffr_close(FfrWriter *w) {
     if (w == NULL) {
         return 1;
     }
@@ -410,12 +467,12 @@ int32_t ffw_writer_close(FfwWriter *w) {
         ok = encode(w, NULL);
         int code = av_write_trailer(w->format);
         if (code < 0 && ok) {
-            ffwi_fail_av("could not finish the file", code);
+            fail_av("could not finish the file", code);
             ok = 0;
         }
     }
     if (w->format != NULL && w->format->pb != NULL && w->format->pb->error < 0 && ok) {
-        ffwi_fail_av("could not write to the file", w->format->pb->error);
+        fail_av("could not write to the file", w->format->pb->error);
         ok = 0;
     }
     writer_free(w);

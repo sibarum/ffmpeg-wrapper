@@ -10,3 +10,4 @@ native/miniaudio/
 */native/dist/
 */native/build/
 */native/ffmpeg/
+*/native/build.log

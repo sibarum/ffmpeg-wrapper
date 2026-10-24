@@ -1,4 +1,4 @@
-package sibarum.ffmpeg;
+package sibarum.ffmpeg.record;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -7,10 +7,10 @@ import java.nio.file.Path;
 
 /**
  * A video being recorded: frames handed in as they are made, encoded to AV1 and written to a Matroska or WebM file.
- * Made by {@link Ffmpeg#record}; finished with {@link #close}, which a try-with-resources does.
+ * Made by {@link #create}; finished with {@link #close}, which a try-with-resources does.
  *
  * <pre>{@code
- * try (Recording rec = Ffmpeg.record(Path.of("window.mkv"), 1920, 1080, Recording.Settings.DEFAULT)) {
+ * try (Recording rec = Recording.create(Path.of("window.mkv"), 1920, 1080, Recording.Settings.DEFAULT)) {
  *     rec.frame(rgba, presentedMicros);       // as each frame is shown
  * }                                           // the file is whole once this returns
  * }</pre>
@@ -30,7 +30,11 @@ import java.nio.file.Path;
  * back to SVT-AV1 where there is none. {@link #frame} encodes before it returns, so a caller that must not wait
  * (a render loop) hands frames to a thread of its own that calls it.
  *
- * <p><b>One thread at a time</b>, as a {@link Video} is. Pixels are what a {@link Frame} holds: straight RGBA8,
+ * <p><b>Only an encoder.</b> This is built against an FFmpeg of its own, with the AV1 encoders and the Matroska and
+ * WebM muxers and nothing else: no decoder, so an application that records a window carries no video player. Its
+ * libraries have their own names, so one that also plays videos ({@code ffmpeg-wrapper}) loads both side by side.
+ *
+ * <p><b>One thread at a time.</b> Pixels are what a decoded frame holds: straight RGBA8,
  * sRGB, tightly packed, top row first.
  */
 public final class Recording implements AutoCloseable {
@@ -45,7 +49,7 @@ public final class Recording implements AutoCloseable {
 
     /** The byte order of a frame's four bytes a pixel. */
     public enum Pixels {
-        /** R, G, B, A: what a {@link Frame} holds. */
+        /** R, G, B, A: what a decoded frame and a picture hold. */
         RGBA,
         /** B, G, R, A: what a swapchain or a DXGI back buffer holds, so a presented frame read back as it is. */
         BGRA
@@ -96,13 +100,58 @@ public final class Recording implements AutoCloseable {
     private long frames;
     private long dropped;
 
-    Recording(MemorySegment handle, Path file, int width, int height) {
+    /**
+     * Create {@code file} and record into it: frames handed to the recording as they are made, encoded to AV1 in the
+     * container the file's name asks for ({@code .mkv} or {@code .webm}), on a canvas of {@code width x height}, the
+     * largest a frame will be (a smaller frame goes at its top left, on black). An existing file is replaced. Throws
+     * {@link RecordingException} if no encoder opens or the file cannot be created.
+     */
+    public static Recording create(Path file, int width, int height, Settings settings) {
+        if (file == null) {
+            throw new RecordingException("no file to record to");
+        }
+        if (width <= 0 || height <= 0) {
+            throw new RecordingException("a zero-sized recording was asked for: " + width + "x" + height);
+        }
+        int encoder = settings.encoder() == Encoder.HARDWARE ? 1 : 0;
+        MemorySegment handle;
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment path = arena.allocateFrom(file.toAbsolutePath().toString());
+            try {
+                handle = (MemorySegment) RecordApi.ffr_open.invokeExact(path, width, height,
+                        settings.frameRate(), settings.quality(), encoder);
+            } catch (Throwable t) {
+                throw downcallFailed("ffr_open", t);
+            }
+        }
+        if (handle.address() == 0) {
+            throw new RecordingException("could not record to " + file + ": " + lastError());
+        }
+        // Nothing owns the handle until the recording exists, so a throw while it is made frees it here.
+        try {
+            return new Recording(handle, file, width, height);
+        } catch (Throwable t) {
+            try {
+                closeHandle(handle);
+            } catch (Throwable u) {
+                t.addSuppressed(u);
+            }
+            throw t;
+        }
+    }
+
+    /** The encoding FFmpeg's own version string, for a log line. */
+    public static String version() {
+        return string(call(() -> (MemorySegment) RecordApi.ffr_version.invokeExact(), "ffr_version"));
+    }
+
+    private Recording(MemorySegment handle, Path file, int width, int height) {
         this.handle = handle;
         this.file = file;
         this.width = width;
         this.height = height;
-        this.encoder = Ffmpeg.string(call(() -> (MemorySegment) CApi.ffw_writer_encoder.invokeExact(handle),
-                "ffw_writer_encoder"));
+        this.encoder = string(call(() -> (MemorySegment) RecordApi.ffr_encoder.invokeExact(handle),
+                "ffr_encoder"));
         this.staging = arena.allocate((long) width * height * 4L);
     }
 
@@ -139,12 +188,7 @@ public final class Recording implements AutoCloseable {
     /** Bytes written to the file so far; what the encoder still holds is written by {@link #close}. */
     public long bytes() {
         MemorySegment h = open();
-        return call(() -> (long) CApi.ffw_writer_bytes.invokeExact(h), "ffw_writer_bytes");
-    }
-
-    /** Encode {@code frame} at its own size, as {@link #frame(byte[], int, int, long)}. */
-    public boolean frame(Frame frame) {
-        return frame(frame.rgba(), frame.width(), frame.height(), frame.ptsMicros());
+        return call(() -> (long) RecordApi.ffr_bytes.invokeExact(h), "ffr_bytes");
     }
 
     /** Encode a frame the canvas's size, as {@link #frame(byte[], int, int, long)}. */
@@ -161,7 +205,7 @@ public final class Recording implements AutoCloseable {
     public boolean frame(byte[] rgba, int frameWidth, int frameHeight, long ptsMicros) {
         long size = bytes(frameWidth, frameHeight);
         if (rgba == null || rgba.length != size) {
-            throw new VideoException("a frame of " + (rgba == null ? 0 : rgba.length) + " bytes, where "
+            throw new RecordingException("a frame of " + (rgba == null ? 0 : rgba.length) + " bytes, where "
                     + frameWidth + "x" + frameHeight + " is " + size);
         }
         open();
@@ -185,12 +229,12 @@ public final class Recording implements AutoCloseable {
         MemorySegment h = open();
         long size = bytes(frameWidth, frameHeight);
         if (pixels == null || !pixels.isNative() || pixels.byteSize() < size) {
-            throw new VideoException("a " + frameWidth + "x" + frameHeight + " frame must be native memory of at least "
+            throw new RecordingException("a " + frameWidth + "x" + frameHeight + " frame must be native memory of at least "
                     + size + " bytes");
         }
         int bgra = order == Pixels.BGRA ? 1 : 0;
-        int got = call(() -> (int) CApi.ffw_writer_frame.invokeExact(h, pixels, frameWidth, frameHeight, bgra,
-                ptsMicros), "ffw_writer_frame");
+        int got = call(() -> (int) RecordApi.ffr_frame.invokeExact(h, pixels, frameWidth, frameHeight, bgra,
+                ptsMicros), "ffr_frame");
         return counted(got);
     }
 
@@ -202,12 +246,12 @@ public final class Recording implements AutoCloseable {
      */
     public boolean repeat(long ptsMicros) {
         MemorySegment h = open();
-        return counted(call(() -> (int) CApi.ffw_writer_repeat.invokeExact(h, ptsMicros), "ffw_writer_repeat"));
+        return counted(call(() -> (int) RecordApi.ffr_repeat.invokeExact(h, ptsMicros), "ffr_repeat"));
     }
 
     private boolean counted(int got) {
         if (got < 0) {
-            throw new VideoException("could not record to " + file + ": " + Video.lastError());
+            throw new RecordingException("could not record to " + file + ": " + lastError());
         }
         if (got == 0) {
             dropped++;
@@ -222,7 +266,7 @@ public final class Recording implements AutoCloseable {
     }
 
     /**
-     * Encode what the encoder still holds and finish the file. Throws {@link VideoException} if it could not be
+     * Encode what the encoder still holds and finish the file. Throws {@link RecordingException} if it could not be
      * finished (a full disk), when what was written may not play; everything is freed all the same. Closing twice
      * does nothing.
      */
@@ -235,12 +279,12 @@ public final class Recording implements AutoCloseable {
         handle = null;
         int ok;
         try {
-            ok = Ffmpeg.closeRecording(h);
+            ok = closeHandle(h);
         } finally {
             arena.close();
         }
         if (ok == 0) {
-            throw new VideoException("could not finish " + file + ": " + Video.lastError());
+            throw new RecordingException("could not finish " + file + ": " + lastError());
         }
     }
 
@@ -252,7 +296,7 @@ public final class Recording implements AutoCloseable {
 
     private static long bytes(int frameWidth, int frameHeight) {
         if (frameWidth <= 0 || frameHeight <= 0 || frameWidth > 16384 || frameHeight > 16384) {
-            throw new VideoException("a " + frameWidth + "x" + frameHeight + " frame");
+            throw new RecordingException("a " + frameWidth + "x" + frameHeight + " frame");
         }
         return (long) frameWidth * frameHeight * 4L;
     }
@@ -260,7 +304,7 @@ public final class Recording implements AutoCloseable {
     private MemorySegment open() {
         MemorySegment h = handle;
         if (h == null) {
-            throw new VideoException(file + " is closed");
+            throw new RecordingException(file + " is closed");
         }
         return h;
     }
@@ -273,7 +317,41 @@ public final class Recording implements AutoCloseable {
         try {
             return call.get();
         } catch (Throwable t) {
-            throw Video.downcallFailed(name, t);
+            throw downcallFailed(name, t);
         }
+    }
+
+    /** Finish and free a recording: 1 if its file is whole, else 0. */
+    private static int closeHandle(MemorySegment handle) {
+        return call(() -> (int) RecordApi.ffr_close.invokeExact(handle), "ffr_close");
+    }
+
+    /** Why the last call on this thread failed, in the shim's words. */
+    private static String lastError() {
+        MemorySegment message;
+        try {
+            message = (MemorySegment) RecordApi.ffr_last_error.invokeExact();
+        } catch (Throwable t) {
+            return "(the error string could not be read: " + t + ")";
+        }
+        if (message == null || message.address() == 0) {
+            return "(FFmpeg gave no reason)";
+        }
+        return string(message);
+    }
+
+    private static String string(MemorySegment s) {
+        return s == null || s.address() == 0 ? "" : s.reinterpret(Long.MAX_VALUE).getString(0);
+    }
+
+    /** A downcall that threw: a missing library stays the error it is, anything else says which call. */
+    private static RecordingException downcallFailed(String name, Throwable cause) {
+        if (cause instanceof LinkageError e) {
+            throw e;
+        }
+        if (cause instanceof RecordingException e) {
+            return e;
+        }
+        return new RecordingException("the downcall to " + name + " failed", cause);
     }
 }
