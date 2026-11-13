@@ -89,6 +89,9 @@ public final class Recording implements AutoCloseable {
         }
     }
 
+    /** A canvas no wider and no taller than this is refused: the software encoder corrupts memory on one. */
+    public static final int TOO_SMALL = 8;
+
     private final Path file;
     private final int width;
     private final int height;
@@ -112,6 +115,12 @@ public final class Recording implements AutoCloseable {
         }
         if (width <= 0 || height <= 0) {
             throw new RecordingException("a zero-sized recording was asked for: " + width + "x" + height);
+        }
+        if (width <= TOO_SMALL && height <= TOO_SMALL) {
+            // SVT-AV1 corrupts the heap on a canvas that fits in one 8x8 block: 4x4, 7x7, 4x8 and 8x8 were seen to end
+            // the process with 0xC0000374 (8x9 and 9x8 do not). A refusal says why; a crash says nothing.
+            throw new RecordingException("a " + width + "x" + height + " recording is too small for AV1: it must be"
+                    + " more than " + TOO_SMALL + " pixels wide or tall");
         }
         int encoder = settings.encoder() == Encoder.HARDWARE ? 1 : 0;
         MemorySegment handle;

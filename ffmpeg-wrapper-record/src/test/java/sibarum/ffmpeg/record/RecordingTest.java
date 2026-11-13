@@ -215,6 +215,14 @@ class RecordingTest {
     void refusesWhatItCannotRecord() {
         assertThrows(RecordingException.class, () -> Recording.create(dir.resolve("x.gif"), 64, 64, Recording.Settings.DEFAULT));
         assertThrows(RecordingException.class, () -> Recording.create(dir.resolve("x.mkv"), 0, 64, Recording.Settings.DEFAULT));
+        // Within one 8x8 block the encoder corrupts the heap, so it is refused; one pixel more either way records.
+        assertThrows(RecordingException.class, () -> Recording.create(dir.resolve("x.mkv"), 8, 8, Recording.Settings.DEFAULT));
+        assertThrows(RecordingException.class, () -> Recording.create(dir.resolve("x.mkv"), 4, 4, Recording.Settings.DEFAULT));
+        for (int[] size : new int[][] {{9, 8}, {8, 9}}) {
+            try (Recording rec = Recording.create(dir.resolve("edge.mkv"), size[0], size[1], Recording.Settings.DEFAULT)) {
+                assertTrue(rec.frame(solid(size[0], size[1], 0), 0));
+            }
+        }
         assertThrows(IllegalArgumentException.class, () -> new Recording.Settings(60, 64, Recording.Encoder.SOFTWARE));
         try (Recording rec = Recording.create(dir.resolve("size.mkv"), 64, 64, Recording.Settings.DEFAULT)) {
             assertThrows(RecordingException.class, () -> rec.frame(new byte[10], 0));
