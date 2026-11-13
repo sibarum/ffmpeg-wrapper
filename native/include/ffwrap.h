@@ -4,7 +4,7 @@
  *
  * Hand-written, not generated: this header is the contract, and the C in ../ffwrap/ (ffwrap.c for
  * pictures, audio.c for sound) and the Java downcalls in
- * ../../src/main/java/sibarum/ffmpeg/CApi.java are all written against it. Twenty-nine functions, no
+ * ../../src/main/java/sibarum/ffmpeg/CApi.java are all written against it. Forty functions, no
  * structs crossing the boundary, two opaque handles. FFmpeg's own structs change layout between major versions; they stay on this side of the
  * line, so the Java never learns one.
  *
@@ -66,14 +66,39 @@ FFW_API int32_t ffw_has_audio(const FfwVideo *v);
  * Returns 1 on success, 0 on failure. */
 FFW_API int32_t ffw_output(FfwVideo *v, uint32_t width, uint32_t height);
 
-/* Decode the next frame. 1 if there is one (read it with ffw_pixels and ffw_pts_us), 0 at the end of
- * the stream, -1 on failure. */
+/* Decode the next frame and convert it into v's own buffer: ffw_decode then ffw_convert. 1 if there is
+ * one (read it with ffw_pixels and ffw_pts_us), 0 at the end of the stream, -1 on failure. */
 FFW_API int32_t ffw_next(FfwVideo *v);
 
 /* The frame ffw_next last produced: its time from the stream's start in microseconds, and its
  * output_width * output_height * 4 bytes, owned by v and valid until the next call on v. */
 FFW_API int64_t ffw_pts_us(const FfwVideo *v);
 FFW_API const uint8_t *ffw_pixels(const FfwVideo *v);
+
+/* Decode the next frame and hold it as decoded, converting nothing: 1 if there is one, 0 at the end of the
+ * stream, -1 on failure. Its time is ffw_pts_us. A frame that will be dropped costs only its decoding this
+ * way; one that will be shown is converted with ffw_convert, or read as it is through ffw_plane. Held until
+ * the next ffw_decode, ffw_next or ffw_seek on v. */
+FFW_API int32_t ffw_decode(FfwVideo *v);
+
+/* Scale and convert the held frame to RGBA at the output size (ffw_output) in one pass, straight into dst,
+ * whose rows are `stride` bytes apart (at least output_width * 4): the caller's memory, a texture's or a
+ * Java array's, so nothing is copied after. Threaded. 1, or 0 on failure (no frame held, say). */
+FFW_API int32_t ffw_convert(FfwVideo *v, uint8_t *dst, int32_t stride);
+
+/* The held frame as the decoder made it, for a converter elsewhere (a GPU's): its pixel format by FFmpeg's
+ * name ("yuv420p", "nv12", "yuv420p10le"; NULL when none is held), its coded size, how many planes it has,
+ * and each plane's first byte, row stride and rows (valid while it is held). Its YUV matrix, as converting
+ * it would use: 601, 709 or 2020, 0 for RGB or other; and whether its range is full (1) or limited (0). */
+FFW_API const char *ffw_frame_format(const FfwVideo *v);
+FFW_API uint32_t ffw_frame_width(const FfwVideo *v);
+FFW_API uint32_t ffw_frame_height(const FfwVideo *v);
+FFW_API int32_t ffw_frame_planes(const FfwVideo *v);
+FFW_API const uint8_t *ffw_plane(const FfwVideo *v, int32_t i);
+FFW_API int32_t ffw_plane_stride(const FfwVideo *v, int32_t i);
+FFW_API int32_t ffw_plane_rows(const FfwVideo *v, int32_t i);
+FFW_API int32_t ffw_frame_matrix(FfwVideo *v);
+FFW_API int32_t ffw_frame_full_range(FfwVideo *v);
 
 /* Go to `us` from the stream's start: the next ffw_next gives the first frame shown at or after it.
  * Returns 1 on success, 0 on failure. */

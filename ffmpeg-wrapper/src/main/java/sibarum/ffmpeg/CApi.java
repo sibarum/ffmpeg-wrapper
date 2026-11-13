@@ -47,6 +47,24 @@ final class CApi {
     static final MethodHandle ffw_pts_us = h("ffw_pts_us", FunctionDescriptor.of(JAVA_LONG, ADDRESS));
     static final MethodHandle ffw_pixels = h("ffw_pixels", FunctionDescriptor.of(ADDRESS, ADDRESS));
     static final MethodHandle ffw_seek = h("ffw_seek", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_LONG));
+    static final MethodHandle ffw_decode = h("ffw_decode", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_convert =
+            h("ffw_convert", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT));
+    /** {@code ffw_convert} into a Java array, which the downcall reaches without a copy (a critical call). */
+    static final MethodHandle ffw_convert_heap = LINKER.downcallHandle(
+            LOOKUP.find("ffw_convert").orElseThrow(() -> new VideoException("symbol not found: ffw_convert")),
+            FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT), Linker.Option.critical(true));
+    static final MethodHandle ffw_frame_format = h("ffw_frame_format", FunctionDescriptor.of(ADDRESS, ADDRESS));
+    static final MethodHandle ffw_frame_width = h("ffw_frame_width", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_frame_height = h("ffw_frame_height", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_frame_planes = h("ffw_frame_planes", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_plane = h("ffw_plane", FunctionDescriptor.of(ADDRESS, ADDRESS, JAVA_INT));
+    static final MethodHandle ffw_plane_stride =
+            h("ffw_plane_stride", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
+    static final MethodHandle ffw_plane_rows = h("ffw_plane_rows", FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT));
+    static final MethodHandle ffw_frame_matrix = h("ffw_frame_matrix", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_frame_full_range =
+            h("ffw_frame_full_range", FunctionDescriptor.of(JAVA_INT, ADDRESS));
     static final MethodHandle ffw_close = h("ffw_close", FunctionDescriptor.ofVoid(ADDRESS));
 
     // sound

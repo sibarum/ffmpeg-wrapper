@@ -11,7 +11,10 @@
         { "returnType": "void", "parameterTypes": ["void*"] },
         { "returnType": "void*", "parameterTypes": ["void*", "jint"] },
         { "returnType": "void", "parameterTypes": ["void*", "jfloat"] },
-        { "returnType": "jint", "parameterTypes": ["void*", "void*", "jint"] }
+        { "returnType": "jint", "parameterTypes": ["void*", "void*", "jint"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "jint"] },
+        { "returnType": "jint", "parameterTypes": ["void*", "void*", "jint"],
+          "options": { "critical": { "allowHeapAccess": true } } }
       ]
   }
 }

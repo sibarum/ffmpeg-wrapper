@@ -16,6 +16,7 @@
 #include <libavutil/avutil.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mathematics.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 
 #if defined(_MSC_VER)
@@ -78,8 +79,10 @@ struct FfwVideo {
 
     uint32_t width, height;         /* shown size: coded size, sample aspect applied */
     uint32_t out_w, out_h;          /* what each frame is scaled to */
-    struct SwsContext *scale;
-    uint8_t *pixels;                /* out_w * out_h * 4 */
+    SwsContext *scale;              /* dynamic: set up from each frame, threaded */
+    AVFrame *out;                   /* the RGBA frame converted into: no buffer of its own */
+    uint8_t *pixels;                /* out_w * out_h * 4, for ffw_next */
+    int held;                       /* v->frame is a decoded frame, not converted */
 
     int64_t start;                  /* the stream's first timestamp, in its time base */
     int64_t pts_us;                 /* the frame last produced */
@@ -97,6 +100,7 @@ void ffw_close(FfwVideo *v) {
     }
     sws_freeContext(v->scale);
     av_free(v->pixels);
+    av_frame_free(&v->out);
     av_frame_free(&v->frame);
     av_packet_free(&v->packet);
     avcodec_free_context(&v->codec);
@@ -104,8 +108,8 @@ void ffw_close(FfwVideo *v) {
     av_free(v);
 }
 
-/* (Re)size the output buffer. The scaler is made per frame, lazily, since the source format is only
- * known once a frame has been decoded, and sws_getCachedContext keeps it while nothing changes. */
+/* (Re)size ffw_next's buffer. The scaler sets itself up from each frame (sws_scale_frame's dynamic mode), so
+ * a change of size or format between frames needs nothing here. */
 static int resize(FfwVideo *v, uint32_t w, uint32_t h) {
     uint8_t *pixels = av_malloc((size_t) w * h * 4);
     if (pixels == NULL) {
@@ -178,7 +182,9 @@ FfwVideo *ffw_open(const char *path) {
     }
     v->packet = av_packet_alloc();
     v->frame = av_frame_alloc();
-    if (v->packet == NULL || v->frame == NULL) {
+    v->out = av_frame_alloc();
+    v->scale = sws_alloc_context();
+    if (v->packet == NULL || v->frame == NULL || v->out == NULL || v->scale == NULL) {
         ffwi_fail("out of memory");
         ffw_close(v);
         return NULL;
@@ -308,43 +314,54 @@ static int64_t to_us(const FfwVideo *v, int64_t ts) {
     return av_rescale_q(ts - v->start, v->stream->time_base, (AVRational) {1, 1000000});
 }
 
-/* The YUV matrix the frame was made with. Unspecified is what most files say, and then the size is the
- * convention: high definition is BT.709, anything smaller BT.601. */
-static const int *coefficients(const AVFrame *f) {
-    int space = f->colorspace;
-    if (space == AVCOL_SPC_UNSPECIFIED || space == AVCOL_SPC_RESERVED) {
-        space = f->height >= 720 ? SWS_CS_ITU709 : SWS_CS_ITU601;
+/* The frame's matrix and range as it is converted: unspecified is what most files say, and then the size
+ * is the convention, high definition BT.709 and anything smaller BT.601, and the range is limited. */
+static void settle_color(AVFrame *f) {
+    if (f->colorspace == AVCOL_SPC_UNSPECIFIED || f->colorspace == AVCOL_SPC_RESERVED) {
+        f->colorspace = f->height >= 720 ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
     }
-    return sws_getCoefficients(space);
+    if (f->color_range == AVCOL_RANGE_UNSPECIFIED) {
+        f->color_range = AVCOL_RANGE_MPEG;
+    }
 }
 
-static int convert(FfwVideo *v) {
+/* Scale and convert the held frame to RGBA at the output size, in one pass, into dst, rows `stride` bytes
+ * apart. The scaler's slices run on as many threads as the machine has. Area averaging when it shrinks,
+ * bilinear otherwise: chroma is interpolated, not repeated. Only the matrix is applied, as before: primaries
+ * and transfer are carried over, so nothing is gamut-mapped. */
+static int convert_into(FfwVideo *v, uint8_t *dst, int stride) {
     AVFrame *f = v->frame;
-    int flags = (uint32_t) f->width > v->out_w || (uint32_t) f->height > v->out_h ? SWS_AREA : SWS_BICUBIC;
-    v->scale = sws_getCachedContext(v->scale, f->width, f->height, (enum AVPixelFormat) f->format,
-                                    (int) v->out_w, (int) v->out_h, AV_PIX_FMT_RGBA,
-                                    flags | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, NULL, NULL, NULL);
-    if (v->scale == NULL) {
-        ffwi_fail("no conversion from %s at %dx%d to RGBA at %ux%u",
-             av_get_pix_fmt_name((enum AVPixelFormat) f->format), f->width, f->height, v->out_w, v->out_h);
+    if (!v->held) {
+        ffwi_fail("no decoded frame to convert");
         return 0;
     }
-    const int *matrix = coefficients(f);
-    int full = f->color_range == AVCOL_RANGE_JPEG;
-    /* Fails harmlessly for a source that is already RGB, where there is no matrix to set. */
-    sws_setColorspaceDetails(v->scale, matrix, full, sws_getCoefficients(SWS_CS_DEFAULT), 1,
-                             0, 1 << 16, 1 << 16);
-    uint8_t *dst[4] = {v->pixels, NULL, NULL, NULL};
-    int stride[4] = {(int) v->out_w * 4, 0, 0, 0};
-    int rows = sws_scale(v->scale, (const uint8_t *const *) f->data, f->linesize, 0, f->height, dst, stride);
-    if (rows <= 0) {
-        ffwi_fail("could not convert a frame to RGBA");
+    settle_color(f);
+    SwsContext *c = v->scale;
+    c->threads = 0;
+    c->flags = ((uint32_t) f->width > v->out_w || (uint32_t) f->height > v->out_h ? SWS_AREA : SWS_BILINEAR)
+               | SWS_FULL_CHR_H_INT;
+    AVFrame *d = v->out;
+    d->width = (int) v->out_w;
+    d->height = (int) v->out_h;
+    d->format = AV_PIX_FMT_RGBA;
+    d->color_range = AVCOL_RANGE_JPEG;
+    d->colorspace = AVCOL_SPC_RGB;
+    d->color_primaries = f->color_primaries;
+    d->color_trc = f->color_trc;
+    d->data[0] = dst;
+    d->linesize[0] = stride;
+    int code = sws_scale_frame(c, d, f);
+    d->data[0] = NULL;
+    d->linesize[0] = 0;
+    if (code < 0) {
+        ffwi_fail_av("could not convert a frame to RGBA", code);
         return 0;
     }
     return 1;
 }
 
-int32_t ffw_next(FfwVideo *v) {
+int32_t ffw_decode(FfwVideo *v) {
+    v->held = 0;
     for (;;) {
         int got = decode(v);
         if (got <= 0) {
@@ -364,10 +381,81 @@ int32_t ffw_next(FfwVideo *v) {
             v->skip_until_us = 0;
         }
         v->pts_us = us;
-        int ok = convert(v);
-        av_frame_unref(v->frame);
-        return ok ? 1 : -1;
+        v->held = 1;
+        return 1;
     }
+}
+
+int32_t ffw_convert(FfwVideo *v, uint8_t *dst, int32_t stride) {
+    if (dst == NULL || stride < (int32_t) v->out_w * 4) {
+        ffwi_fail("nowhere to convert a %ux%u frame to (stride %d)", v->out_w, v->out_h, stride);
+        return 0;
+    }
+    return convert_into(v, dst, stride);
+}
+
+int32_t ffw_next(FfwVideo *v) {
+    int got = ffw_decode(v);
+    if (got <= 0) {
+        return got;
+    }
+    return convert_into(v, v->pixels, (int) v->out_w * 4) ? 1 : -1;
+}
+
+const char *ffw_frame_format(const FfwVideo *v) {
+    return v->held ? av_get_pix_fmt_name((enum AVPixelFormat) v->frame->format) : NULL;
+}
+
+uint32_t ffw_frame_width(const FfwVideo *v) {
+    return v->held ? (uint32_t) v->frame->width : 0;
+}
+
+uint32_t ffw_frame_height(const FfwVideo *v) {
+    return v->held ? (uint32_t) v->frame->height : 0;
+}
+
+int32_t ffw_frame_planes(const FfwVideo *v) {
+    return v->held ? av_pix_fmt_count_planes((enum AVPixelFormat) v->frame->format) : 0;
+}
+
+const uint8_t *ffw_plane(const FfwVideo *v, int32_t i) {
+    return v->held && i >= 0 && i < ffw_frame_planes(v) ? v->frame->data[i] : NULL;
+}
+
+int32_t ffw_plane_stride(const FfwVideo *v, int32_t i) {
+    return v->held && i >= 0 && i < ffw_frame_planes(v) ? v->frame->linesize[i] : 0;
+}
+
+int32_t ffw_plane_rows(const FfwVideo *v, int32_t i) {
+    if (!v->held || i < 0 || i >= ffw_frame_planes(v)) {
+        return 0;
+    }
+    const AVPixFmtDescriptor *d = av_pix_fmt_desc_get((enum AVPixelFormat) v->frame->format);
+    int h = v->frame->height;
+    return (i == 1 || i == 2) && d != NULL ? AV_CEIL_RSHIFT(h, d->log2_chroma_h) : h;
+}
+
+int32_t ffw_frame_matrix(FfwVideo *v) {
+    if (!v->held) {
+        return 0;
+    }
+    settle_color(v->frame);
+    switch (v->frame->colorspace) {
+        case AVCOL_SPC_BT709: return 709;
+        case AVCOL_SPC_BT470BG:
+        case AVCOL_SPC_SMPTE170M: return 601;
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL: return 2020;
+        default: return 0;
+    }
+}
+
+int32_t ffw_frame_full_range(FfwVideo *v) {
+    if (!v->held) {
+        return 0;
+    }
+    settle_color(v->frame);
+    return v->frame->color_range == AVCOL_RANGE_JPEG;
 }
 
 int64_t ffw_pts_us(const FfwVideo *v) {
@@ -393,6 +481,8 @@ int32_t ffw_seek(FfwVideo *v, int64_t us) {
         }
     }
     avcodec_flush_buffers(v->codec);
+    av_frame_unref(v->frame);
+    v->held = 0;
     v->drained = 0;
     v->skip_until_us = us;
     v->pts_us = us;

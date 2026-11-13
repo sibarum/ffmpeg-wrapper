@@ -93,6 +93,90 @@ public final class Video implements AutoCloseable {
     }
 
     /**
+     * Decode the next frame and hold it as decoded, converting nothing: its time from the stream's start in
+     * µs, or -1 at the end of the stream. A frame that will be dropped costs only its decoding this way, a
+     * fraction of what {@link #next} costs, which also scales it and copies it out. One that will be shown is
+     * then {@linkplain #convert(byte[]) converted}, or read as it is ({@link #planes}). Held until the next
+     * {@code decode}, {@code next} or {@code seek}. Blocking: it decodes.
+     */
+    public long decode() {
+        MemorySegment h = open();
+        int got = call(() -> (int) CApi.ffw_decode.invokeExact(h), "ffw_decode");
+        if (got == 0) {
+            return -1;
+        }
+        if (got < 0) {
+            throw new VideoException("could not decode " + file + ": " + lastError());
+        }
+        return call(() -> (long) CApi.ffw_pts_us.invokeExact(h), "ffw_pts_us");
+    }
+
+    /**
+     * Scale and convert the frame {@link #decode} holds to RGBA at the {@linkplain #output output size}, in one
+     * threaded pass, straight into {@code rgba}: at least {@code outputWidth * outputHeight * 4} bytes, rows
+     * packed. Nothing is copied after. The array is reached in place, so no garbage collection runs on the
+     * calling thread meanwhile (a few ms at 1080p).
+     */
+    public void convert(byte[] rgba) {
+        MemorySegment h = open();
+        if (rgba.length < (long) outWidth * outHeight * 4L) {
+            throw new IllegalArgumentException(rgba.length + " bytes for a " + outWidth + "x" + outHeight + " frame");
+        }
+        MemorySegment dst = MemorySegment.ofArray(rgba);
+        int stride = outWidth * 4;
+        int ok = call(() -> (int) CApi.ffw_convert_heap.invokeExact(h, dst, stride), "ffw_convert");
+        if (ok == 0) {
+            throw new VideoException("could not convert a frame of " + file + ": " + lastError());
+        }
+    }
+
+    /**
+     * {@link #convert(byte[])} into native memory, rows {@code stride} bytes apart (at least
+     * {@code outputWidth * 4}): a mapped staging buffer's, say.
+     */
+    public void convert(MemorySegment dst, int stride) {
+        MemorySegment h = open();
+        if (stride < outWidth * 4 || dst.byteSize() < (long) stride * (outHeight - 1) + outWidth * 4L) {
+            throw new IllegalArgumentException(dst.byteSize() + " bytes at a stride of " + stride + " for a "
+                    + outWidth + "x" + outHeight + " frame");
+        }
+        int ok = call(() -> (int) CApi.ffw_convert.invokeExact(h, dst, stride), "ffw_convert");
+        if (ok == 0) {
+            throw new VideoException("could not convert a frame of " + file + ": " + lastError());
+        }
+    }
+
+    /**
+     * The frame {@link #decode} holds, as the decoder made it: for a converter elsewhere, a GPU's. Its planes
+     * are native memory owned by this video and valid only until the next {@code decode}, {@code next},
+     * {@code seek} or {@code close}: copy or upload them before. Null when no frame is held.
+     */
+    public Planes planes() {
+        MemorySegment h = open();
+        MemorySegment name = call(() -> (MemorySegment) CApi.ffw_frame_format.invokeExact(h), "ffw_frame_format");
+        if (name == null || name.address() == 0) {
+            return null;
+        }
+        int n = call(() -> (int) CApi.ffw_frame_planes.invokeExact(h), "ffw_frame_planes");
+        MemorySegment[] data = new MemorySegment[n];
+        int[] strides = new int[n];
+        for (int i = 0; i < n; i++) {
+            int plane = i;
+            int stride = call(() -> (int) CApi.ffw_plane_stride.invokeExact(h, plane), "ffw_plane_stride");
+            int rows = call(() -> (int) CApi.ffw_plane_rows.invokeExact(h, plane), "ffw_plane_rows");
+            MemorySegment p = call(() -> (MemorySegment) CApi.ffw_plane.invokeExact(h, plane), "ffw_plane");
+            strides[i] = stride;
+            data[i] = p.reinterpret((long) Math.abs(stride) * rows);
+        }
+        return new Planes(Ffmpeg.string(name),
+                call(() -> (int) CApi.ffw_frame_width.invokeExact(h), "ffw_frame_width"),
+                call(() -> (int) CApi.ffw_frame_height.invokeExact(h), "ffw_frame_height"),
+                call(() -> (int) CApi.ffw_frame_matrix.invokeExact(h), "ffw_frame_matrix"),
+                call(() -> (int) CApi.ffw_frame_full_range.invokeExact(h), "ffw_frame_full_range") != 0,
+                data, strides);
+    }
+
+    /**
      * Go to {@code micros} from the stream's start: the next {@link #next} gives the frame showing then.
      * Exact, not to the keyframe before it — the frames between are decoded and dropped, so a seek costs
      * up to one keyframe interval of decoding.

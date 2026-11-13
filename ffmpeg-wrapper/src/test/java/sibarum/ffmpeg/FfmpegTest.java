@@ -124,6 +124,68 @@ class FfmpegTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"rgb.mp4", "rgb.webm", "rgb.mkv"})
+    void decodesWithoutConvertingAndConvertsOnlyWhatIsAsked(String name) throws IOException {
+        try (Video v = Ffmpeg.open(fixture(name)); Video w = Ffmpeg.open(fixture(name))) {
+            int count = 0;
+            long last = -1;
+            byte[] rgba = new byte[64 * 48 * 4];
+            for (long pts; (pts = v.decode()) >= 0; count++) {
+                assertTrue(pts > last, "timestamps rise");
+                last = pts;
+                Frame same = w.next();
+                assertEquals(same.ptsMicros(), pts, "the same frames as next() gives");
+                if (count % 7 == 0) {
+                    v.convert(rgba);
+                    assertArrayEquals(same.rgba(), rgba, "converted the same as next() converts");
+                }
+            }
+            assertEquals(30, count);
+            assertEquals(-1, v.decode(), "the end stays the end");
+            assertNull(v.planes(), "nothing held at the end");
+            assertThrows(VideoException.class, () -> v.convert(rgba), "nothing to convert");
+        }
+    }
+
+    @Test
+    void convertsIntoNativeMemoryAtAStride() throws IOException {
+        try (Video v = Ffmpeg.open(fixture("rgb.webm")); Arena arena = Arena.ofConfined()) {
+            v.output(16, 12);
+            v.seek(1_500_000);
+            assertEquals(1_500_000, v.decode());
+            int stride = 16 * 4 + 32;
+            MemorySegment dst = arena.allocate((long) stride * 12);
+            v.convert(dst, stride);
+            byte[] row = dst.asSlice((long) stride * 6, 16 * 4).toArray(java.lang.foreign.ValueLayout.JAVA_BYTE);
+            assertDominant(new Frame(16, 1, 1_500_000, row), GREEN);
+        }
+    }
+
+    @Test
+    void theHeldFrameIsItsPlanes() throws IOException {
+        try (Video v = Ffmpeg.open(fixture("rgb.mkv"))) {
+            assertNull(v.planes(), "nothing held before the first decode");
+            v.decode();
+            Planes p = v.planes();
+            assertEquals("yuv420p", p.format());
+            assertEquals(64, p.width());
+            assertEquals(48, p.height());
+            assertEquals(601, p.matrix(), "unspecified, and smaller than HD: BT.601");
+            assertFalse(p.fullRange());
+            assertEquals(3, p.count());
+            assertTrue(p.strides()[0] >= 64 && p.strides()[1] >= 32);
+            assertEquals((long) p.strides()[0] * 48, p.data()[0].byteSize());
+            assertEquals((long) p.strides()[1] * 24, p.data()[1].byteSize(), "chroma at half height");
+            // Solid red, limited range BT.601: Y about 81, Cr far above the middle.
+            int y = p.data()[0].get(java.lang.foreign.ValueLayout.JAVA_BYTE, (long) 24 * p.strides()[0] + 32) & 0xFF;
+            int cr = p.data()[2].get(java.lang.foreign.ValueLayout.JAVA_BYTE, (long) 12 * p.strides()[2] + 16) & 0xFF;
+            assertTrue(y > 60 && y < 100 && cr > 200, "red as decoded: Y " + y + ", Cr " + cr);
+            v.seek(0);
+            assertNull(v.planes(), "a seek lets the held frame go");
+        }
+    }
+
     @Test
     void refusesWhatIsNotAVideo() throws IOException {
         Path text = Files.createTempFile("not-a-video", ".mp4");

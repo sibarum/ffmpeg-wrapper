@@ -8,7 +8,7 @@ Two halves, each over an FFmpeg of its own, so an application carries only the h
 
 | Artifact | What it holds | Windows natives |
 | --- | --- | --- |
-| `ffmpeg-wrapper` | `Ffmpeg.open`, `Video`, `Audio`: every decoder, over BtbN's prebuilt LGPL FFmpeg and the `ffwrap` shim (29 functions) | 125 MB |
+| `ffmpeg-wrapper` | `Ffmpeg.open`, `Video`, `Audio`: every decoder, over BtbN's prebuilt LGPL FFmpeg and the `ffwrap` shim (40 functions) | 125 MB |
 | `ffmpeg-wrapper-record` | `Recording`: the AV1 encoders (SVT-AV1, NVENC, Quick Sync, AMF) and the Matroska and WebM muxers, over an FFmpeg built from source with nothing else and the `ffrecord` shim (8 functions) | 14 MB |
 
 ```java
@@ -20,6 +20,14 @@ try (Video video = Ffmpeg.open(path)) {
         f.ptsMicros();                 // when it is shown
     }
     video.seek(12_500_000);            // exact: the next frame is the one showing at 12.5 s
+
+    byte[] rgba = new byte[640 * 360 * 4];  // a player that drops frames: decode each, convert the ones it shows
+    for (long pts; (pts = video.decode()) >= 0; ) {
+        if (shown(pts)) {
+            video.convert(rgba);       // scaled and converted in one threaded pass, straight into the array
+        }
+    }
+    Planes p = video.planes();         // or the frame as decoded ("yuv420p", BT.709), for a GPU to convert
 }
 
 try (Audio sound = Ffmpeg.openAudio(path)) {
@@ -330,6 +338,11 @@ copied out of `ffmpeg-wrapper-record-<os>`'s `natives/record/<platform>/`.
 - **Seeks are exact.** `seek(t)` goes to the keyframe at or before `t`, then decodes and drops frames
   until the one showing at `t`. That costs up to one keyframe interval of decoding, and is what a
   scrubber wants.
+- **Decoding and converting are separate costs.** `decode()` only decodes (about 1 ms a 1080p AV1 frame);
+  `convert` scales to RGBA in one pass on as many threads as the machine has, into the caller's array or
+  native memory, so nothing is copied after. `next()` is the two together, plus a copy into a new array.
+  A player that drops frames should decode every frame and convert only the ones it shows. Area
+  averaging when shrinking, bilinear otherwise, chroma interpolated.
 - **A damaged packet is skipped**, as a player would skip it. Only running out of memory, or an
   unreadable file, stops `next()` with an exception.
 - **FFmpeg's log is kept, not printed.** A library writing to the host's stderr is talking over its
