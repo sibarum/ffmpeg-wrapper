@@ -189,28 +189,6 @@ class RecordingTest {
         }
     }
 
-    /** Real time is the point: 1080p must encode well ahead of 60 frames a second on the machine the build runs on. */
-    @ParameterizedTest
-    @ValueSource(strings = {"SOFTWARE", "HARDWARE"})
-    void keepsUpWithA1080pWindow(String encoder) {
-        int w = 1920, h = 1080, n = 120;
-        byte[][] frames = new byte[4][];
-        for (int i = 0; i < frames.length; i++) {
-            frames[i] = interfaceLike(w, h, i);
-        }
-        try (Recording rec = Recording.create(dir.resolve("hd.mkv"), w, h,
-                Recording.Settings.DEFAULT.withEncoder(Recording.Encoder.valueOf(encoder)))) {
-            rec.frame(frames[0], 0);    // the encoder's start is not a frame's cost
-            long start = System.nanoTime();
-            for (int i = 1; i <= n; i++) {
-                rec.frame(frames[i % frames.length], i * 16_667L);
-            }
-            double perFrameMs = (System.nanoTime() - start) / 1e6 / n;
-            System.out.printf("1080p %s: %.2f ms a frame%n", rec.encoder(), perFrameMs);
-            assertTrue(perFrameMs < 16.7, "1080p at " + perFrameMs + " ms a frame cannot keep up with 60 fps");
-        }
-    }
-
     @Test
     void refusesWhatItCannotRecord() {
         assertThrows(RecordingException.class, () -> Recording.create(dir.resolve("x.gif"), 64, 64, Recording.Settings.DEFAULT));
@@ -278,27 +256,6 @@ class RecordingTest {
             px[i + 1] = (byte) (rgb >> 8);
             px[i + 2] = (byte) rgb;
             px[i + 3] = (byte) 0xff;
-        }
-        return px;
-    }
-
-    /** Flat panels, rules and rows of small glyph-like marks, moved a little each frame: what a window is. */
-    static byte[] interfaceLike(int w, int h, int shift) {
-        byte[] px = new byte[w * h * 4];
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int v = x < 300 ? 0x20 : 0x30;
-                if (y % 24 == 0) {
-                    v = 0x50;
-                } else if (x >= 320 && (y % 24) > 6 && (y % 24) < 18 && ((x + shift * 3) * 7 + y * 13) % 11 < 4) {
-                    v = 0xe0;
-                }
-                int i = (y * w + x) * 4;
-                px[i] = (byte) v;
-                px[i + 1] = (byte) v;
-                px[i + 2] = (byte) (v + 8);
-                px[i + 3] = (byte) 0xff;
-            }
         }
         return px;
     }

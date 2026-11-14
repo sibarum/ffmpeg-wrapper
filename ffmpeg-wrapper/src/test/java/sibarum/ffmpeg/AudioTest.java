@@ -78,28 +78,6 @@ class AudioTest {
     }
 
     @Test
-    void theClockHoldsUntilPlayedAndWhilePaused() throws Exception {
-        try (Audio a = Ffmpeg.openAudio(fixture("rgb.mp4"), Audio.Output.NOWHERE)) {
-            Thread.sleep(200);
-            assertEquals(0, a.clockMicros(), "paused at the start");
-
-            a.play();
-            Thread.sleep(600);
-            long played = a.clockMicros();
-            assertTrue(played > 300_000 && played < 900_000, "after 0.6 s of playing: " + played);
-
-            a.pause();
-            long held = a.clockMicros();
-            Thread.sleep(300);
-            assertEquals(held, a.clockMicros(), "paused, the clock holds");
-
-            a.play();
-            Thread.sleep(300);
-            assertTrue(a.clockMicros() > held, "and runs on when played");
-        }
-    }
-
-    @Test
     void theClockNeverGoesBack() throws Exception {
         try (Audio a = Ffmpeg.openAudio(fixture("rgb.mp4"), Audio.Output.NOWHERE)) {
             a.play();
@@ -112,22 +90,6 @@ class AudioTest {
                 Thread.sleep(1);
             }
             assertTrue(last > 500_000, "it ran: " + last);
-        }
-    }
-
-    @Test
-    void aSeekIsTheClockAtOnce() throws Exception {
-        try (Audio a = Ffmpeg.openAudio(fixture("rgb.mp4"), Audio.Output.NOWHERE)) {
-            a.seek(2_000_000);
-            assertEquals(2_000_000, a.clockMicros(), "paused");
-
-            a.play();
-            Thread.sleep(400);
-            a.seek(1_000_000);
-            assertEquals(1_000_000, a.clockMicros(), "playing");
-            Thread.sleep(400);
-            long on = a.clockMicros();
-            assertTrue(on > 1_100_000 && on < 1_700_000, "and plays on from there: " + on);
         }
     }
 

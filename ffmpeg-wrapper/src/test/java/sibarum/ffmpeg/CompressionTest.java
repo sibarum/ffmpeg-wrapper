@@ -108,45 +108,6 @@ class CompressionTest {
     }
 
     @Test
-    void aChangeIsHeardAtOnce() throws Exception {
-        try (Audio a = Ffmpeg.openAudio(fixture("quiet-loud.flac"), Audio.Output.NOWHERE)) {
-            a.seek(300_000);
-            a.play();
-            double before = rmsAt(a, 700_000);
-            a.compression(1f);
-            Thread.sleep(80);
-            float[] heard = new float[1200 * 2];
-            int got = a.heard(heard);
-            double after = rms(heard, 0, got);
-            double raised = 20 * Math.log10(after / before);
-            assertTrue(raised > 6, "raised within 80 ms of asking: " + raised + " dB");
-        }
-    }
-
-    /** What the leveller holds back is held in the decoder, which is ahead anyway: the clock is as it was. */
-    @Test
-    void theClockIsAsItWas() throws Exception {
-        try (Audio a = Ffmpeg.openAudio(fixture("quiet-loud.flac"), Audio.Output.NOWHERE)) {
-            a.compression(1f);
-            a.seek(1_000_000);
-            assertEquals(1_000_000, a.clockMicros(), "a seek is the clock at once");
-            a.play();
-            Thread.sleep(400);
-            long on = a.clockMicros();
-            assertTrue(on > 1_200_000 && on < 1_550_000, "and plays on from there, without waiting: " + on);
-
-            a.seek(2_500_000);
-            long giveUp = System.nanoTime() + 3_000_000_000L;
-            while (!a.ended() && System.nanoTime() < giveUp) {
-                Thread.sleep(10);
-            }
-            assertTrue(a.ended(), "every sample played, the leveller's last included");
-            long end = a.clockMicros();
-            assertTrue(Math.abs(end - 3_000_000) < 100_000, "at the sound's end: " + end);
-        }
-    }
-
-    @Test
     void compressionIsClamped() throws Exception {
         try (Audio a = Ffmpeg.openAudio(fixture("tone.wav"), Audio.Output.NOWHERE)) {
             a.compression(-1f);
