@@ -4,7 +4,7 @@
  *
  * Hand-written, not generated: this header is the contract, and the C in ../ffwrap/ (ffwrap.c for
  * pictures, audio.c for sound) and the Java downcalls in
- * ../../src/main/java/sibarum/ffmpeg/CApi.java are all written against it. Forty functions, no
+ * ../../src/main/java/sibarum/ffmpeg/CApi.java are all written against it. Forty-eight functions, no
  * structs crossing the boundary, two opaque handles. FFmpeg's own structs change layout between major versions; they stay on this side of the
  * line, so the Java never learns one.
  *
@@ -105,6 +105,39 @@ FFW_API int32_t ffw_frame_full_range(FfwVideo *v);
 FFW_API int32_t ffw_seek(FfwVideo *v, int64_t us);
 
 FFW_API void ffw_close(FfwVideo *v);
+
+/* --- decoding into the caller's memory -------------------------------------------------------------
+ *
+ * Memory the caller lends, mapped and shared with whatever reads the frames next (a GPU's staging, which it copies
+ * from), so a decoded frame is already where it is read and nothing copies it. The caller lends it in chunks, each
+ * named by an id of its choosing; the decoder is given a block of one for each frame it decodes, laid out as it
+ * wants (the planes and strides ffw_kept_place reports), and the block is free again once nothing refers to its
+ * frame. A decoder that cannot decode into memory it is given, or one that asks while no block is free, decodes
+ * into its own, and a frame kept from it is copied into a block once (ffw_stage_copies counts them).
+ *
+ * The chunks must stay mapped until the FfwVideo is closed and every kept frame released: nothing writes into a
+ * chunk after the close, and a release only marks its block free. */
+
+/* A decoded frame kept in the staging: a reference, released with ffw_kept_release, from any thread. */
+typedef struct FfwFrame FfwFrame;
+
+/* Lend `bytes` at `base` (aligned to 64), named `chunk`. 1, or 0 if it cannot be taken (64 chunks at most). */
+FFW_API int32_t ffw_stage_into(FfwVideo *v, uint8_t *base, int64_t bytes, int32_t chunk);
+/* The bytes one frame's block takes, 0 until the frames' layout is known (the first frame decoded). */
+FFW_API int64_t ffw_stage_block(FfwVideo *v);
+/* How many blocks can still be had, free or not yet cut from a chunk; -1 until the layout is known. */
+FFW_API int32_t ffw_stage_room(FfwVideo *v);
+/* How many frames were kept by copying them into a block, rather than decoded there. */
+FFW_API int64_t ffw_stage_copies(FfwVideo *v);
+/* The held frame (ffw_decode), kept in the staging: decoded there, or copied there now. NULL, with the reason, when
+ * no block is free or no frame is held. */
+FFW_API FfwFrame *ffw_keep(FfwVideo *v);
+/* Another reference to a kept frame, released on its own. */
+FFW_API FfwFrame *ffw_kept_ref(const FfwFrame *f);
+FFW_API void ffw_kept_release(FfwFrame *f);
+/* The chunk a kept frame is in, and each of its four planes' offset into it and stride, in bytes (0 past the
+ * last plane). -1 if it is in none. */
+FFW_API int32_t ffw_kept_place(const FfwFrame *f, int64_t *offsets, int32_t *strides);
 
 /* --- sound -------------------------------------------------------------------------------------------
  *

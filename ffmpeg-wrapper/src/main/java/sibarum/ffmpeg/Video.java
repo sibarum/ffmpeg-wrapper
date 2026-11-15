@@ -189,6 +189,56 @@ public final class Video implements AutoCloseable {
         }
     }
 
+    /**
+     * Lend {@code chunk} to the decoder, named {@code id}: native memory, 64-byte aligned, that frames are decoded
+     * straight into from now (a GPU's mapped staging, say, so a decoded frame is already where the GPU copies it
+     * from). Each frame takes a block of a chunk, laid out as the decoder wants; {@link #stageBlock} says how large
+     * once the first frame is decoded, and {@link #stageRoom} how many can still be had. The chunk must stay mapped
+     * until this video is closed and every frame {@linkplain #keep kept} from it is {@linkplain Kept#release
+     * released}. At most 64 chunks.
+     */
+    public void stageInto(MemorySegment chunk, int id) {
+        MemorySegment h = open();
+        long bytes = chunk.byteSize();
+        int ok = call(() -> (int) CApi.ffw_stage_into.invokeExact(h, chunk, bytes, id), "ffw_stage_into");
+        if (ok == 0) {
+            throw new VideoException("could not stage " + file + " into " + bytes + " bytes: " + lastError());
+        }
+    }
+
+    /** The bytes one frame's block takes in the staging, or 0 until the frames' layout is known. */
+    public long stageBlock() {
+        MemorySegment h = open();
+        return call(() -> (long) CApi.ffw_stage_block.invokeExact(h), "ffw_stage_block");
+    }
+
+    /** How many more blocks the staging can give, free or not yet cut; -1 until the frames' layout is known. */
+    public int stageRoom() {
+        MemorySegment h = open();
+        return call(() -> (int) CApi.ffw_stage_room.invokeExact(h), "ffw_stage_room");
+    }
+
+    /**
+     * How many frames were kept by copying them into a block rather than being decoded there: every frame of a
+     * decoder that cannot decode into memory it is given (dav1d's AV1), and any decoded while no block was free.
+     */
+    public long stageCopies() {
+        MemorySegment h = open();
+        return call(() -> (long) CApi.ffw_stage_copies.invokeExact(h), "ffw_stage_copies");
+    }
+
+    /**
+     * The frame {@link #decode} holds, kept in the staging ({@link #stageInto}): a handle to it ({@link Kept}),
+     * which stays valid past the next decode and past this video's close, until released. No copy when the frame was
+     * decoded into a block; otherwise copied into one now. 0 when no block is free, or the frame does not fit one
+     * ({@link #lastError} says which).
+     */
+    public long keep() {
+        MemorySegment h = open();
+        MemorySegment k = call(() -> (MemorySegment) CApi.ffw_keep.invokeExact(h), "ffw_keep");
+        return k == null ? 0 : k.address();
+    }
+
     public boolean closed() {
         return handle == null;
     }
@@ -219,7 +269,7 @@ public final class Video implements AutoCloseable {
     }
 
     /** FFmpeg's own account of the last failure on this thread, or a stand-in. */
-    static String lastError() {
+    public static String lastError() {
         MemorySegment message;
         try {
             message = (MemorySegment) CApi.ffw_last_error.invokeExact();

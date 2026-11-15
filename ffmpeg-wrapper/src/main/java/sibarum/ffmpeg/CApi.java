@@ -13,7 +13,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
 
 /**
  * Raw FFM downcalls onto {@code native/include/ffwrap.h}. Hand-written, one line per function, in the
- * header's order — twenty-nine of them, which is the whole of the boundary.
+ * header's order, which is the whole of the boundary.
  *
  * <p>{@code int64_t} is bound as {@code JAVA_LONG} and every {@code uint32_t} as {@code JAVA_INT}; a
  * frame side or sample rate that overflows a signed int is one no decoder would have produced. Lifetimes
@@ -66,6 +66,18 @@ final class CApi {
     static final MethodHandle ffw_frame_full_range =
             h("ffw_frame_full_range", FunctionDescriptor.of(JAVA_INT, ADDRESS));
     static final MethodHandle ffw_close = h("ffw_close", FunctionDescriptor.ofVoid(ADDRESS));
+
+    // decoding into the caller's memory
+    static final MethodHandle ffw_stage_into =
+            h("ffw_stage_into", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_LONG, JAVA_INT));
+    static final MethodHandle ffw_stage_block = h("ffw_stage_block", FunctionDescriptor.of(JAVA_LONG, ADDRESS));
+    static final MethodHandle ffw_stage_room = h("ffw_stage_room", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    static final MethodHandle ffw_stage_copies = h("ffw_stage_copies", FunctionDescriptor.of(JAVA_LONG, ADDRESS));
+    static final MethodHandle ffw_keep = h("ffw_keep", FunctionDescriptor.of(ADDRESS, ADDRESS));
+    static final MethodHandle ffw_kept_ref = h("ffw_kept_ref", FunctionDescriptor.of(ADDRESS, ADDRESS));
+    static final MethodHandle ffw_kept_release = h("ffw_kept_release", FunctionDescriptor.ofVoid(ADDRESS));
+    static final MethodHandle ffw_kept_place =
+            h("ffw_kept_place", FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS));
 
     // sound
     static final MethodHandle ffw_audio_open =

@@ -88,6 +88,7 @@ struct FfwVideo {
     int64_t pts_us;                 /* the frame last produced */
     int64_t skip_until_us;          /* after a seek, frames that end before this are decoded and dropped */
     int drained;                    /* the demuxer is spent and the decoder has been told so */
+    FfwStaging *staging;            /* memory the caller lends, decoded straight into (staging.c) */
 };
 
 const char *ffw_version(void) {
@@ -104,6 +105,7 @@ void ffw_close(FfwVideo *v) {
     av_frame_free(&v->frame);
     av_packet_free(&v->packet);
     avcodec_free_context(&v->codec);
+    ffwi_staging_drop(v->staging);   /* after the decoder, which gives its blocks back as it goes */
     avformat_close_input(&v->format);
     av_free(v);
 }
@@ -173,6 +175,14 @@ FfwVideo *ffw_open(const char *path) {
         return NULL;
     }
     v->codec->thread_count = 0;     /* as many as the machine has */
+    v->staging = ffwi_staging_new();
+    if (v->staging == NULL) {
+        ffwi_fail("out of memory");
+        ffw_close(v);
+        return NULL;
+    }
+    v->codec->opaque = v->staging;
+    v->codec->get_buffer2 = ffwi_get_buffer;
     v->codec->pkt_timebase = v->stream->time_base;
     code = avcodec_open2(v->codec, decoder, NULL);
     if (code < 0) {
@@ -491,4 +501,55 @@ int32_t ffw_seek(FfwVideo *v, int64_t us) {
 
 const char *ffw_last_error(void) {
     return err_set ? err_text : NULL;
+}
+
+/* --- decoding into the caller's memory: staging.c, through the video's own staging --- */
+
+int32_t ffw_stage_into(FfwVideo *v, uint8_t *base, int64_t bytes, int32_t chunk) {
+    if (bytes <= 0) {
+        ffwi_fail("no memory to stage into (%lld bytes)", (long long) bytes);
+        return 0;
+    }
+    return ffwi_staging_add(v->staging, base, (size_t) bytes, chunk);
+}
+
+int64_t ffw_stage_block(FfwVideo *v) {
+    return ffwi_staging_block(v->staging);
+}
+
+int32_t ffw_stage_room(FfwVideo *v) {
+    return ffwi_staging_room(v->staging);
+}
+
+int64_t ffw_stage_copies(FfwVideo *v) {
+    return ffwi_staging_copies(v->staging);
+}
+
+FfwFrame *ffw_keep(FfwVideo *v) {
+    if (!v->held) {
+        ffwi_fail("no decoded frame to keep");
+        return NULL;
+    }
+    return (FfwFrame *) ffwi_staging_keep(v->staging, v->codec, v->frame);
+}
+
+FfwFrame *ffw_kept_ref(const FfwFrame *f) {
+    AVFrame *k = av_frame_clone((const AVFrame *) f);
+    if (k == NULL) {
+        ffwi_fail("out of memory for a frame");
+    }
+    return (FfwFrame *) k;
+}
+
+void ffw_kept_release(FfwFrame *f) {
+    AVFrame *k = (AVFrame *) f;
+    av_frame_free(&k);
+}
+
+int32_t ffw_kept_place(const FfwFrame *f, int64_t *offsets, int32_t *strides) {
+    int32_t chunk = ffwi_kept_place((const AVFrame *) f, offsets, strides);
+    if (chunk < 0) {
+        ffwi_fail("the frame is in no chunk of the staging");
+    }
+    return chunk;
 }

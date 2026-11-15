@@ -343,6 +343,14 @@ copied out of `ffmpeg-wrapper-record-<os>`'s `natives/record/<platform>/`.
   native memory, so nothing is copied after. `next()` is the two together, plus a copy into a new array.
   A player that drops frames should decode every frame and convert only the ones it shows. Area
   averaging when shrinking, bilinear otherwise, chroma interpolated.
+- **Decoding into memory of the caller's.** `stageInto(chunk, id)` lends the decoder native memory (a GPU's mapped
+  staging, say), and from then on each frame is decoded straight into a block of it, laid out as the decoder wants:
+  the shim's `get_buffer2` hands the blocks out. `keep()` gives the held frame as a `Kept` handle, a reference that
+  keeps its block from being decoded into again until released, and `Kept.place` says where its planes are and their
+  strides, so whatever reads the memory copies nothing to get the frame. A block is free once nothing refers to its
+  frame, the decoder's reference frames included. A decoder that cannot decode into memory it is given (dav1d's AV1),
+  or one that asks while no block is free, decodes into its own, and `keep()` copies the frame into a block once
+  (`stageCopies()` counts them). The chunks must stay mapped until the video is closed and every handle released.
 - **A damaged packet is skipped**, as a player would skip it. Only running out of memory, or an
   unreadable file, stops `next()` with an exception.
 - **FFmpeg's log is kept, not printed.** A library writing to the host's stderr is talking over its
