@@ -7,9 +7,10 @@
  * once nothing refers to its frame: not the decoder, which keeps reference frames, and not the caller, who keeps
  * frames to show. FFmpeg's buffer reference counting decides that, and this only keeps the free list.
  *
- * A decoder that cannot decode into memory it is given (no AV_CODEC_CAP_DR1: dav1d's AV1 is one) gets its own,
- * and a frame kept from it is copied into a block once. So is a frame decoded while no block was free: the
- * decoder is never kept waiting, and never handed memory of another layout, which some decoders refuse.
+ * A decoder that cannot decode into memory it is given (see direct(): dav1d's AV1, unless FFmpeg carries
+ * native/patches/libdav1d-get-buffer.patch) gets its own, and a frame kept from it is copied into a block once.
+ * So is a frame decoded while no block was free: the decoder is never kept waiting, and never handed memory of
+ * another layout, which some decoders refuse.
  */
 #include "internal.h"
 
@@ -226,9 +227,19 @@ static void lay_out(const FfwStaging *s, AVFrame *f, uint8_t *b) {
     f->extended_data = f->data;
 }
 
+/*
+ * Whether c may be handed memory of the staging's: a decoder that says it decodes into memory it is given (DR1), or
+ * dav1d's, which asks only where FFmpeg carries native/patches/libdav1d-get-buffer.patch, and checks for itself
+ * that what it is given will do. An unpatched dav1d never asks. Any other decoder gets FFmpeg's own memory.
+ */
+static int direct(const AVCodecContext *c) {
+    return (c->codec->capabilities & AV_CODEC_CAP_DR1)
+        || (c->codec->wrapper_name != NULL && strcmp(c->codec->wrapper_name, "libdav1d") == 0);
+}
+
 int ffwi_get_buffer(AVCodecContext *c, AVFrame *f, int flags) {
     FfwStaging *s = c->opaque;
-    if (s == NULL || !(c->codec->capabilities & AV_CODEC_CAP_DR1)) {
+    if (s == NULL || !direct(c)) {
         return avcodec_default_get_buffer2(c, f, flags);
     }
     LOCK(&s->lock);

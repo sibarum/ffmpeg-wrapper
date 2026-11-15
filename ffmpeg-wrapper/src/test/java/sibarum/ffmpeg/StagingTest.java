@@ -25,10 +25,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class StagingTest {
 
-    /** H.264 (FFmpeg's own decoder) and VP9 decode in place; AV1 is dav1d's, which keeps its own memory. */
+    /**
+     * H.264 and VP9 (FFmpeg's own decoders) decode in place, and so does AV1 (dav1d) where FFmpeg is built with
+     * native/patches/libdav1d-get-buffer.patch, which is Windows; Linux's prebuilt FFmpeg still copies AV1 in once.
+     */
     @ParameterizedTest
     @CsvSource({"rgb.mp4, false", "rgb.webm, false", "rgb.mkv, true"})
-    void framesAreDecodedIntoTheStagingOrCopiedThereOnce(String name, boolean copies) throws IOException {
+    void framesAreDecodedIntoTheStagingOrCopiedThereOnce(String name, boolean av1) throws IOException {
+        boolean copies = av1 && !System.getProperty("os.name").startsWith("Windows");
         try (Arena arena = Arena.ofShared(); Video v = Ffmpeg.open(fixture(name))) {
             MemorySegment chunk = arena.allocate(16L << 20, 4096);
             v.stageInto(chunk, 7);

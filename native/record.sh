@@ -1,7 +1,7 @@
 # What every record OS module's native/build.sh shares: the pinned FFmpeg and SVT-AV1 sources, and how FFmpeg is
 # configured to hold the AV1 encoders and nothing else. Sourced, never run; the OS modules' scripts are what run.
 #
-# The decoding build (common.sh) is BtbN's prebuilt FFmpeg: every decoder, and 130 MB on Windows. An application
+# The decoding build (common.sh, decode.sh) holds every decoder. An application
 # that only records needs none of it, so recording has a build of its own, from source: FFmpeg configured with
 # --disable-everything, then the four AV1 encoders, the Matroska and WebM muxers and the file protocol put back.
 # SVT-AV1 is built from its own pinned source and linked into avcodec statically; the GPU encoders are the
@@ -16,11 +16,10 @@
 # fetch_verified, from the decoding build's script.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-# The sources, pinned. FFmpeg's release tarball is the one its signature (ffmpeg-devel.asc) was checked against
-# when this was pinned; the decoding build's BtbN autobuild is of the same release.
-REC_FFMPEG=8.1.3
-REC_FFMPEG_SHA=7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
-REC_FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-$REC_FFMPEG.tar.xz"
+# The sources, pinned: FFmpeg's is common.sh's, shared with the decoding build.
+REC_FFMPEG=$FFMPEG_SRC
+REC_FFMPEG_SHA=$FFMPEG_SRC_SHA
+REC_FFMPEG_URL=$FFMPEG_SRC_URL
 REC_SVT=4.2.0
 REC_SVT_SHA=c7b13c4a84bd3751aa35fcc72be13e6875467e7c2216879251a486e5b1e4e740
 REC_SVT_URL="https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v$REC_SVT/SVT-AV1-v$REC_SVT.tar.gz"

@@ -1,0 +1,96 @@
+FFmpeg's dav1d wrapper, decoding into the application's memory (ffmpeg-wrapper/native/decode.sh).
+
+FFmpeg's own decoders take each frame's memory from AVCodecContext.get_buffer2 (direct rendering, DR1); the dav1d
+wrapper does not: its picture allocator draws from a pool of its own, so an application that wants its frames in
+memory of its own (a GPU's mapped staging) has to copy every AV1 frame there. With this, when the application has
+installed a get_buffer2, the allocator asks it for the picture's memory first, a frame the picture's size rounded
+up to 128, which is all dav1d writes to, and uses it when it is what dav1d needs (one buffer, planes and strides
+DAV1D_PICTURE_ALIGNMENT-aligned, both chroma planes the same stride); otherwise its pool, as before. An application
+that installs no get_buffer2 sees no change.
+
+The decoder does not claim AV_CODEC_CAP_DR1: to FFmpeg that means every output frame comes through ff_get_buffer,
+which decode.c asserts. An application's get_buffer2 tells this decoder by its name (libdav1d), which asks it only
+through this patch, and checks itself that what it is given will do.
+
+Against FFmpeg 8.1.3. Applied with: patch -p1 -d <ffmpeg source> < libdav1d-get-buffer.patch
+
+--- a/libavcodec/libdav1d.c
++++ b/libavcodec/libdav1d.c
+@@ -74,14 +74,67 @@
+     av_vlog(c, AV_LOG_ERROR, fmt, vl);
+ }
+ 
++/*
++ * A picture in memory the application's get_buffer2 gives, so it decodes where the application wants its frames
++ * (direct rendering, as FFmpeg's own decoders do). The frame asked for is the picture's size rounded up to 128,
++ * all dav1d writes to. 1 when the picture is set up there, 0 when the memory given is not what dav1d needs (its
++ * planes DAV1D_PICTURE_ALIGNMENT-aligned, its two chroma planes the same stride, all in one buffer), and the
++ * decoder's own pool is used instead, or a negative error.
++ */
++static int libdav1d_picture_from_app(AVCodecContext *c, Dav1dPicture *p,
++                                     enum AVPixelFormat format, int w, int h)
++{
++    AVFrame *f = av_frame_alloc();
++    int ret, planes = p->p.layout == DAV1D_PIXEL_LAYOUT_I400 ? 1 : 3;
++
++    if (!f)
++        return AVERROR(ENOMEM);
++    f->format = format;
++    f->width  = w;
++    f->height = h;
++    ret = c->get_buffer2(c, f, 0);
++    if (ret < 0) {
++        av_frame_free(&f);
++        return ret;
++    }
++    ret = f->buf[0] && !f->buf[1];
++    for (int i = 0; i < planes && ret; i++)
++        ret = f->data[i] && f->linesize[i] > 0 &&
++              !((uintptr_t)f->data[i] % DAV1D_PICTURE_ALIGNMENT) &&
++              !(f->linesize[i] % DAV1D_PICTURE_ALIGNMENT);
++    if (ret && planes == 3)
++        ret = f->linesize[1] == f->linesize[2];
++    if (ret) {
++        p->allocator_data = av_buffer_ref(f->buf[0]);
++        if (!p->allocator_data) {
++            av_frame_free(&f);
++            return AVERROR(ENOMEM);
++        }
++        p->data[0] = f->data[0];
++        p->data[1] = f->data[1];
++        p->data[2] = f->data[2];
++        p->stride[0] = f->linesize[0];
++        p->stride[1] = f->linesize[1];
++    }
++    av_frame_free(&f);
++    return ret;
++}
++
+ static int libdav1d_picture_allocator(Dav1dPicture *p, void *cookie)
+ {
+-    Libdav1dContext *dav1d = cookie;
++    AVCodecContext *c = cookie;
++    Libdav1dContext *dav1d = c->priv_data;
+     enum AVPixelFormat format = pix_fmt[p->p.layout][p->seq_hdr->hbd];
+     int ret, linesize[4], h = FFALIGN(p->p.h, 128), w = FFALIGN(p->p.w, 128);
+     uint8_t *aligned_ptr, *data[4];
+     AVBufferRef *buf;
+ 
++    if (c->get_buffer2 != avcodec_default_get_buffer2) {
++        ret = libdav1d_picture_from_app(c, p, format, w, h);
++        if (ret != 0)
++            return ret < 0 ? ret : 0;
++    }
++
+     ret = av_image_get_buffer_size(format, w, h, DAV1D_PICTURE_ALIGNMENT);
+     if (ret < 0)
+         return ret;
+@@ -221,7 +274,7 @@
+     dav1d_default_settings(&s);
+     s.logger.cookie = c;
+     s.logger.callback = libdav1d_log_callback;
+-    s.allocator.cookie = dav1d;
++    s.allocator.cookie = c;
+     s.allocator.alloc_picture_callback = libdav1d_picture_allocator;
+     s.allocator.release_picture_callback = libdav1d_picture_release;
+     s.frame_size_limit = c->max_pixels;
