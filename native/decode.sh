@@ -1,21 +1,21 @@
-# What an OS module's native/build.sh shares when it builds the decoding FFmpeg from source rather than fetching
-# BtbN's: the pinned dav1d, the patch that lets dav1d decode into the application's memory, and how FFmpeg is
-# configured. Sourced, never run; the OS modules' scripts are what run.
+# What every OS module's native/build.sh shares to build the decoding FFmpeg from source: the pinned dav1d, the
+# patch that lets dav1d decode into the application's memory, and how FFmpeg is configured. Sourced, never run;
+# the OS modules' scripts are what run.
 #
-# Why from source: the shim decodes straight into memory the caller lends (ffwrap.h, "decoding into the caller's
-# memory"), through get_buffer2. FFmpeg's own decoders all take their memory that way; dav1d's AV1 wrapper does
-# not, so with a prebuilt FFmpeg every AV1 frame is copied once. patches/libdav1d-get-buffer.patch makes it ask
-# get_buffer2 too, and a patched FFmpeg is one built here.
+# Why from source, not a prebuilt FFmpeg: the shim decodes straight into memory the caller lends (ffwrap.h,
+# "decoding into the caller's memory"), through get_buffer2. FFmpeg's own decoders all take their memory that way;
+# dav1d's AV1 wrapper does not, so with a prebuilt FFmpeg every AV1 frame is copied once.
+# patches/libdav1d-get-buffer.patch makes it ask get_buffer2 too, and a patched FFmpeg is one built here.
 #
 # What it holds: every decoder, demuxer and parser FFmpeg has of its own, which is every format a picture viewer
 # plays (H.264, HEVC, VP8, VP9, MPEG-1/2/4, ProRes, DNxHD, AAC, Opus, Vorbis, MP3, FLAC, ...), dav1d for AV1,
 # zlib, and the file protocol. No encoder, muxer, filter, device or network protocol: the shim uses none.
-# Against BtbN's build, what is gone is the external libraries whose formats FFmpeg decodes itself (libvpx,
-# libopus, libvorbis, openh264, libwebp, OpenJPEG, libaom) and a few niche ones it does not (AVS2/AVS3, LCEVC,
-# game-music and tracker-module files).
+# Against the full prebuilt build this replaced (BtbN's), what is gone is the external libraries whose formats
+# FFmpeg decodes itself (libvpx, libopus, libvorbis, openh264, libwebp, OpenJPEG, libaom) and a few niche ones it
+# does not (AVS2/AVS3, LCEVC, game-music and tracker-module files).
 #
-# LGPL, shared, as BtbN's build was: FFmpeg stays a set of separate libraries a user can swap, nothing GPL is
-# enabled, and the source is the pinned release (common.sh's FFMPEG_SRC) with the patch above.
+# LGPL, shared: FFmpeg stays a set of separate libraries a user can swap, nothing GPL is enabled, and the source is
+# the pinned release (common.sh's FFMPEG_SRC) with the patch above.
 
 # fetch_verified and the FFmpeg source pin.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"

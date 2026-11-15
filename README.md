@@ -8,7 +8,7 @@ Two halves, each over an FFmpeg of its own, so an application carries only the h
 
 | Artifact | What it holds | Windows natives |
 | --- | --- | --- |
-| `ffmpeg-wrapper` | `Ffmpeg.open`, `Video`, `Audio`: every decoder FFmpeg has of its own, and dav1d, over an LGPL FFmpeg built from source (BtbN's prebuilt one on Linux) and the `ffwrap` shim (40 functions) | 23 MB |
+| `ffmpeg-wrapper` | `Ffmpeg.open`, `Video`, `Audio`: every decoder FFmpeg has of its own, and dav1d, over an LGPL FFmpeg built from source and the `ffwrap` shim (40 functions) | 23 MB |
 | `ffmpeg-wrapper-record` | `Recording`: the AV1 encoders (SVT-AV1, NVENC, Quick Sync, AMF) and the Matroska and WebM muxers, over an FFmpeg built from source with nothing else and the `ffrecord` shim (8 functions) | 14 MB |
 
 ```java
@@ -237,14 +237,13 @@ a thread that calls it. `vexelray-codec-record`'s `Recorder` is that thread.
 
 ## Licence: LGPL, shared
 
-The decoding half's FFmpeg is an **LGPL shared** build. On Windows it is built here from the pinned release
-source (`native/decode.sh`) with FFmpeg's own decoders and dav1d, which is BSD-licensed and linked into its
-`avcodec`, and one patch (`native/patches`), which travels beside the libraries. On Linux it is still BtbN's
-prebuilt build, with the permissively licensed libraries BtbN links in (dav1d, libvpx, openh264, ...). Nothing
-GPL is in either, so there is no x264, x265 or libpostproc, and decoding needs none of those. FFmpeg stays a set of separate
-libraries beside the shim, which a user can replace, and that is what the LGPL asks for.
-`FFMPEG-LICENSE.txt` and `FFMPEG-SOURCE.txt` (which build, and where its source is), and on Windows dav1d's
-licence, travel in the jar beside the libraries, under `natives/<platform>/`.
+The decoding half's FFmpeg is an **LGPL shared** build, made here from the pinned release source
+(`native/decode.sh`) with FFmpeg's own decoders and dav1d, which is BSD-licensed and linked into its `avcodec`,
+and one patch (`native/patches`), which travels beside the libraries. Nothing GPL is in it, so there is no x264,
+x265 or libpostproc, and decoding needs none of those. FFmpeg stays a set of separate libraries beside the shim,
+which a user can replace, and that is what the LGPL asks for. `FFMPEG-LICENSE.txt`, `FFMPEG-SOURCE.txt` (which
+build, and where its source is) and dav1d's licence travel in the jar beside the libraries, under
+`natives/<platform>/`.
 
 The recording half's FFmpeg is the same licence, shared, built from the pinned release source with nothing GPL
 enabled. Its encoders are SVT-AV1, which is BSD-licensed and linked into its `avcodec`, and the GPU vendors' own
@@ -261,8 +260,8 @@ native/include/ffwrap.h      the decoding contract: 29 functions, 2 opaque handl
 native/ffwrap/ffwrap.c       pictures: libavformat, libavcodec, libswscale
 native/ffwrap/audio.c        sound: libavformat, libavcodec, libswresample, miniaudio; its thread and clock
 native/ffwrap/miniaudio.c    miniaudio's implementation (device layer only, see ma.h)
-native/common.sh             the pins every build shares: FFmpeg (BtbN's build, and its release source), miniaudio
-native/decode.sh             the decoding build from source (Windows): dav1d's pin, the patches, FFmpeg's configuration
+native/common.sh             the pins every build shares: FFmpeg's release source, miniaudio
+native/decode.sh             the decoding build: dav1d's pin, the patches, FFmpeg's configuration
 native/patches/              changes to FFmpeg: dav1d decoding into the application's memory (get_buffer2)
 native/record/ffrecord.h     the recording contract: 8 functions, 1 opaque handle
 native/record/record.c       recording: libswscale to YUV, an AV1 encoder, libavformat to Matroska/WebM
@@ -276,7 +275,8 @@ ffmpeg-wrapper/src/main/java/sibarum/ffmpeg/
     VideoInfo.java, Frame.java, VideoException.java
     CApi.java                one line per header function
     NativeLib.java           the decoding build, through NativeLibraries
-ffmpeg-wrapper-<os>/native/build.sh          build (Windows) or fetch (Linux) FFmpeg, compile ffwrap, stage natives/<platform>/
+ffmpeg-wrapper-<os>/native/build.sh          build dav1d and FFmpeg from source, compile ffwrap, stage natives/<platform>/
+ffmpeg-wrapper-linux/native/build-in-container.sh   the same on AlmaLinux 8 (glibc 2.28), the Linux release build
 ffmpeg-wrapper-record/src/main/java/sibarum/ffmpeg/record/
     Recording.java           a file being recorded: create, frame, repeat, encoder, bytes, close
     RecordingException.java
@@ -291,6 +291,7 @@ the public types, not a second API.
 
 ```bash
 ./ffmpeg-wrapper-windows/native/build.sh          # decoding: builds dav1d and FFmpeg from source, stages native/dist/<platform>/
+./ffmpeg-wrapper-linux/native/build-in-container.sh   # the same for Linux, on AlmaLinux 8 (podman or docker)
 ./ffmpeg-wrapper-record-windows/native/build.sh   # recording: builds SVT-AV1 and FFmpeg from source (a few minutes)
 mvn install          # bundles them into the jars; tests need --enable-native-access (surefire is set up)
 ```
@@ -302,23 +303,23 @@ it stages needs anything but Windows' own. On Linux it needs `cc`, `make`, `cmak
 `pkg-config`, plus nv-codec-headers and AMF's headers for those encoders. **The Linux recording build is written,
 not yet run.**
 
-`build.sh` pins one BtbN autobuild (`RELEASE` and `BUILD` at its top, a month's last build, which BtbN
-keeps) and checks the download against its sha256. A bump changes those three lines together. miniaudio
-is pinned the same way (`MINIAUDIO` and `MINIAUDIO_SHA`), one header fetched into `native/miniaudio/`.
-The native side needs a C compiler and nothing else:
+The decoding build pins FFmpeg's release source (`common.sh`'s `FFMPEG_SRC`, shared with the recording build)
+and dav1d's (`decode.sh`'s `DAV1D`), checks each download against its sha256, and applies `native/patches`.
+miniaudio is pinned the same way (`MINIAUDIO` and `MINIAUDIO_SHA`), one header fetched into `native/miniaudio/`.
 
-- **Windows:** the Visual Studio C++ build tools. `build.sh` finds them through `vswhere`, and runs from
-  Git Bash.
-- **Linux (x86_64, aarch64):** `cc`. The shim is linked with `$ORIGIN` as its runpath, so it finds FFmpeg
-  beside itself wherever the jar is extracted. Written, not yet run.
-- **macOS:** BtbN builds no macOS FFmpeg. One from elsewhere (Homebrew's is GPL, so a build configured
-  with `--enable-shared --disable-gpl` would be needed) goes in as a new case in `build.sh` and
-  `NativeLib.platform()`.
-
-The Windows staging is about 125 MB of DLLs, most of it `avcodec`. The jar compresses it to about
-55 MB. If that ever matters, a custom FFmpeg configured with `--disable-everything` plus the decoders and
-demuxers wanted is a fraction of the size, and changes nothing above `build.sh`: the recording half is built
-that way (`native/record.sh`) and stages 14 MB.
+- **Windows:** the script runs itself under MSYS2's UCRT64 (at `C:\msys64`), with
+  `pacman -S make diffutils patch mingw-w64-ucrt-x86_64-{gcc,meson,ninja,pkgconf,nasm,zlib}`, and compiles the
+  shim with the Visual Studio C++ build tools, found through `vswhere`. FFmpeg's DLLs link libgcc, winpthread and
+  zlib in statically, and the script fails if one needs anything but Windows' own. About 23 MB of DLLs.
+- **Linux (x86_64, aarch64):** `./ffmpeg-wrapper-linux/native/build-in-container.sh`, with podman or docker,
+  runs `build.sh` on AlmaLinux 8. A Linux library loads only where glibc is at least as new as where it was
+  built, and AlmaLinux 8's is 2.28, so the libraries run on any distribution from 2019 on; `build.sh` fails if
+  anything it stages needs a newer glibc (`MAX_GLIBC`) or a library beyond the C library's own and zlib. Run
+  directly, it needs `cc`, `make`, `meson`, `ninja`, `nasm` (x86_64), `pkg-config`, `patch`, `curl`, `xz` and
+  zlib's headers, on a machine as old. The shim is linked with `$ORIGIN` as its runpath, so it finds FFmpeg
+  beside itself wherever the jar is extracted. **Written, not yet run.**
+- **macOS:** no build yet. `decode.sh` builds there as it does elsewhere; it goes in as a new OS module and a
+  new case in `NativeLib.platform()`.
 
 At runtime the libraries are extracted from the jar to a temp dir and loaded in the order `libs.txt`
 gives (each after the ones it links, so a library loaded by path finds its dependencies already there).
@@ -352,8 +353,9 @@ copied out of `ffmpeg-wrapper-record-<os>`'s `natives/record/<platform>/`.
   the shim's `get_buffer2` hands the blocks out. `keep()` gives the held frame as a `Kept` handle, a reference that
   keeps its block from being decoded into again until released, and `Kept.place` says where its planes are and their
   strides, so whatever reads the memory copies nothing to get the frame. A block is free once nothing refers to its
-  frame, the decoder's reference frames included. A decoder that cannot decode into memory it is given (dav1d's AV1,
-  where FFmpeg lacks `native/patches/libdav1d-get-buffer.patch`: Linux's prebuilt build), or one that asks while no block is free, decodes into its own, and `keep()` copies the frame into a block once
+  frame, the decoder's reference frames included. Every decoder the bundled FFmpeg has decodes there, AV1 too
+  (dav1d, through `native/patches/libdav1d-get-buffer.patch`). One that cannot (an unpatched dav1d), or one that
+  asks while no block is free, decodes into its own, and `keep()` copies the frame into a block once
   (`stageCopies()` counts them). The chunks must stay mapped until the video is closed and every handle released.
 - **A damaged packet is skipped**, as a player would skip it. Only running out of memory, or an
   unreadable file, stops `next()` with an exception.

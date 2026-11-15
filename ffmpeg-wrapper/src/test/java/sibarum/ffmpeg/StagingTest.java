@@ -2,7 +2,7 @@ package sibarum.ffmpeg;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -26,13 +26,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class StagingTest {
 
     /**
-     * H.264 and VP9 (FFmpeg's own decoders) decode in place, and so does AV1 (dav1d) where FFmpeg is built with
-     * native/patches/libdav1d-get-buffer.patch, which is Windows; Linux's prebuilt FFmpeg still copies AV1 in once.
+     * H.264 and VP9 (FFmpeg's own decoders) decode in place, and so does AV1 (dav1d), through
+     * native/patches/libdav1d-get-buffer.patch, which every bundled FFmpeg is built with.
      */
     @ParameterizedTest
-    @CsvSource({"rgb.mp4, false", "rgb.webm, false", "rgb.mkv, true"})
-    void framesAreDecodedIntoTheStagingOrCopiedThereOnce(String name, boolean av1) throws IOException {
-        boolean copies = av1 && !System.getProperty("os.name").startsWith("Windows");
+    @ValueSource(strings = {"rgb.mp4", "rgb.webm", "rgb.mkv"})
+    void framesAreDecodedIntoTheStaging(String name) throws IOException {
         try (Arena arena = Arena.ofShared(); Video v = Ffmpeg.open(fixture(name))) {
             MemorySegment chunk = arena.allocate(16L << 20, 4096);
             v.stageInto(chunk, 7);
@@ -60,12 +59,8 @@ class StagingTest {
             }
             assertEquals(12, kept.size());
             assertTrue(v.stageBlock() > 0);
-            if (copies) {
-                assertEquals(12, v.stageCopies(), "every kept frame copied in once");
-            } else {
-                assertTrue(v.stageCopies() <= 1, "decoded in place (the first, decoded before the chunk was lent, "
-                        + "may be copied): " + v.stageCopies());
-            }
+            assertTrue(v.stageCopies() <= 1, "decoded in place (the first, decoded before the chunk was lent, may be "
+                    + "copied): " + v.stageCopies());
             int roomBefore = v.stageRoom();
             for (long k : kept) {
                 Kept.release(k);
