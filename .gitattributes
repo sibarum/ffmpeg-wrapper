@@ -6,3 +6,5 @@
 # Shell scripts run under bash on every OS, Git Bash included: checked out with CRLF, "#!/usr/bin/env bash<CR>" is
 # a bad interpreter and every line ends in a stray \r.
 *.sh text eol=lf
+# Patches apply to FFmpeg's LF sources: checked out with CRLF, patch finds no hunk.
+*.patch text eol=lf
