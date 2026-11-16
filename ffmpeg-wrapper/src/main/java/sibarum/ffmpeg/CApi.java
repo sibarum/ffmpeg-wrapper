@@ -85,6 +85,12 @@ final class CApi {
     static final MethodHandle ffw_audio_codec = h("ffw_audio_codec", FunctionDescriptor.of(ADDRESS, ADDRESS));
     static final MethodHandle ffw_audio_channels = h("ffw_audio_channels", FunctionDescriptor.of(JAVA_INT, ADDRESS));
     static final MethodHandle ffw_audio_rate = h("ffw_audio_rate", FunctionDescriptor.of(JAVA_INT, ADDRESS));
+    /**
+     * Null where the natives predate it (added 2026-11-15; a platform's natives not rebuilt since): the length is then
+     * unknown, rather than every function failing to load for want of one.
+     */
+    static final MethodHandle ffw_audio_duration_us =
+            optional("ffw_audio_duration_us", FunctionDescriptor.of(JAVA_LONG, ADDRESS));
     static final MethodHandle ffw_audio_play = h("ffw_audio_play", FunctionDescriptor.of(JAVA_INT, ADDRESS));
     static final MethodHandle ffw_audio_pause = h("ffw_audio_pause", FunctionDescriptor.of(JAVA_INT, ADDRESS));
     static final MethodHandle ffw_audio_seek =
@@ -105,6 +111,11 @@ final class CApi {
         return LINKER.downcallHandle(
                 LOOKUP.find(name).orElseThrow(() -> new VideoException("symbol not found: " + name)),
                 desc);
+    }
+
+    /** A function newer than some natives may be: its handle, or null where they do not have it. */
+    private static MethodHandle optional(String name, FunctionDescriptor desc) {
+        return LOOKUP.find(name).map(symbol -> LINKER.downcallHandle(symbol, desc)).orElse(null);
     }
 
     private CApi() {

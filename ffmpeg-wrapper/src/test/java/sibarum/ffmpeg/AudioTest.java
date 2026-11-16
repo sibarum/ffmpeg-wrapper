@@ -57,6 +57,7 @@ class AudioTest {
             assertEquals(codec, a.codec());
             assertEquals(1, a.channels());
             assertEquals(rate, a.sampleRate());
+            assertEquals(3_000_000, a.durationMicros(), 60_000, "three seconds, as the file says");
 
             a.seek(2_700_000);
             a.play();

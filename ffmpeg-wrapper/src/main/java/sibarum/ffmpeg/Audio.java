@@ -2,6 +2,7 @@ package sibarum.ffmpeg;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
+import java.lang.invoke.MethodHandle;
 import java.nio.file.Path;
 
 import static java.lang.foreign.ValueLayout.JAVA_FLOAT;
@@ -44,6 +45,7 @@ public final class Audio implements AutoCloseable {
     private final String codec;
     private final int channels;
     private final int sampleRate;
+    private final long durationMicros;
     private MemorySegment handle;
 
     Audio(MemorySegment handle, Path file) {
@@ -52,6 +54,17 @@ public final class Audio implements AutoCloseable {
         this.codec = Ffmpeg.string(call(() -> (MemorySegment) CApi.ffw_audio_codec.invokeExact(handle), "ffw_audio_codec"));
         this.channels = call(() -> (int) CApi.ffw_audio_channels.invokeExact(handle), "ffw_audio_channels");
         this.sampleRate = call(() -> (int) CApi.ffw_audio_rate.invokeExact(handle), "ffw_audio_rate");
+        MethodHandle duration = CApi.ffw_audio_duration_us;
+        this.durationMicros = duration == null ? -1
+                : call(() -> (long) duration.invokeExact(handle), "ffw_audio_duration_us");
+    }
+
+    /**
+     * The whole file's length in microseconds, as the container says it, else the stream; -1 where neither does, or
+     * where the natives are older than this.
+     */
+    public long durationMicros() {
+        return durationMicros;
     }
 
     /** The file this was opened from. */

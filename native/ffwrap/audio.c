@@ -574,6 +574,16 @@ uint32_t ffw_audio_rate(const FfwAudio *a) {
     return (uint32_t) a->codec->sample_rate;
 }
 
+int64_t ffw_audio_duration_us(const FfwAudio *a) {
+    if (a->format->duration != AV_NOPTS_VALUE && a->format->duration > 0) {
+        return av_rescale_q(a->format->duration, AV_TIME_BASE_Q, (AVRational) {1, 1000000});
+    }
+    if (a->stream->duration != AV_NOPTS_VALUE && a->stream->duration > 0) {
+        return av_rescale_q(a->stream->duration, a->stream->time_base, (AVRational) {1, 1000000});
+    }
+    return -1;
+}
+
 int32_t ffw_audio_play(FfwAudio *a) {
     if (ma_device_get_state(&a->device) == ma_device_state_started) {
         return 1;

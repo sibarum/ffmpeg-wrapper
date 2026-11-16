@@ -95,6 +95,12 @@ It holds while paused. After a seek it says the place sought at once and stays t
 there starts to be heard. A gap in the stream is filled with silence, so the count stays the stream's
 time. Showing each frame when this clock reaches it keeps the picture with the sound, the way players do.
 
+**How long the sound is**: `durationMicros()`, read once at open, is the file's length as the container says it,
+else the stream's, and -1 where neither does, as `VideoInfo.durationMicros` is for a video. It is the shim's newest
+function (`ffw_audio_duration_us`, 2026-11-15), and the only one looked up as optional: natives built before it load
+as before and answer -1, so a platform whose natives have not been rebuilt since (Linux, as of that date) loses only
+the length.
+
 `Audio.Output.NOWHERE` plays to miniaudio's null device, which drains the sound in real time and drops
 it. The clock runs as it would with speakers, which is what the tests use on a machine with no sound
 card.
@@ -271,7 +277,7 @@ ffmpeg-wrapper-api/          FfmpegNatives, FfmpegRecordNatives (where an OS mod
 ffmpeg-wrapper/src/main/java/sibarum/ffmpeg/
     Ffmpeg.java              open a file, or its sound; FFmpeg's version
     Video.java               an open file: info, output size, next frame, seek, close
-    Audio.java               its sound: play, pause, seek, volume, clock, close
+    Audio.java               its sound: play, pause, seek, volume, clock, length, close
     VideoInfo.java, Frame.java, VideoException.java
     CApi.java                one line per header function
     NativeLib.java           the decoding build, through NativeLibraries

@@ -162,6 +162,9 @@ FFW_API FfwAudio *ffw_audio_open(const char *path, int32_t output);
 FFW_API const char *ffw_audio_codec(const FfwAudio *a);
 FFW_API uint32_t ffw_audio_channels(const FfwAudio *a);
 FFW_API uint32_t ffw_audio_rate(const FfwAudio *a);
+/* The whole file's length in microseconds, as ffw_duration_us reads it: the container's, else the stream's; -1 where
+ * neither says. */
+FFW_API int64_t ffw_audio_duration_us(const FfwAudio *a);
 
 /* Start and stop the output. Paused, the clock holds and the device is given back. 1, or 0 on failure. */
 FFW_API int32_t ffw_audio_play(FfwAudio *a);
